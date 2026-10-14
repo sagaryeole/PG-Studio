@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PG Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232f6fde'/%3E%3Cpath d='M4 5h8M4 8h8M4 11h8' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">PG Studio</span>
+    <span class="sep">/</span>
+    <span id="schema" class="schema">…</span>
+    <span id="mode" class="badge" title="All queries run in READ ONLY transactions">read-only</span>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <input id="filter" type="search" placeholder="Filter tables" autocomplete="off" spellcheck="false">
+      <ul id="tables" class="tables" aria-label="Tables"></ul>
+      <p id="tables-status" class="muted small"></p>
+    </aside>
+
+    <main class="main">
+      <div id="empty" class="empty">
+        <p>Select a table on the left.</p>
+      </div>
+
+      <section id="view" class="view" hidden>
+        <div class="view-head">
+          <div>
+            <h1 id="title"></h1>
+            <p id="subtitle" class="muted small"></p>
+          </div>
+          <div class="pager">
+            <label class="small muted">Rows
+              <select id="page-size">
+                <option>25</option>
+                <option selected>50</option>
+                <option>100</option>
+              </select>
+            </label>
+            <button id="prev" type="button">‹ Prev</button>
+            <span id="page" class="small"></span>
+            <button id="next" type="button">Next ›</button>
+          </div>
+        </div>
+        <p id="warning" class="warning small" hidden></p>
+        <div class="grid-wrap">
+          <table id="grid" class="grid">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+    </main>
+
+    <aside id="inspector" class="inspector" hidden>
+      <div class="inspector-head">
+        <div>
+          <div id="insp-col" class="insp-col"></div>
+          <div id="insp-type" class="muted small mono"></div>
+        </div>
+        <button id="insp-close" type="button" aria-label="Close">×</button>
+      </div>
+      <pre id="insp-value" class="insp-value"></pre>
+      <p id="insp-note" class="muted small"></p>
+      <div class="inspector-actions">
+        <button id="insp-copy" type="button">Copy value</button>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

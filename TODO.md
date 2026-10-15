@@ -20,6 +20,16 @@ Guardrails for every item: the browser never sends SQL, identifiers come from th
 - [x] **Table details tab.** Indexes, constraints, size, `CREATE TABLE` definition, all read from the catalog.
 - [x] **Exact row count on demand.** Button that runs `count(*)` with the timeout instead of the planner estimate.
 
+## Done: usability pass
+
+- [x] Start page with recent and largest tables, and tips.
+- [x] Jump to table (⌘K) across all schemas, fuzzy matching.
+- [x] Column header menu: sort, filter, value/no-value, hide.
+- [x] Keyboard: arrows, Enter, ⌘C, `/`, `[` `]`, `?` help.
+- [x] Side panel shows the whole row; relationships in plain words.
+- [x] Paging moved under the grid; numbers right-aligned; loading bar; errors at the top with Dismiss.
+- [x] Broken bookmarks fall back to the plain table with an explanation.
+
 ## Possible next (small)
 
 - [ ] **Keyset paging for custom sorts on indexed columns.** Needs NULL-aware cursor conditions; only worth it if you page deep into a sorted big table.

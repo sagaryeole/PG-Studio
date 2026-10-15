@@ -4,66 +4,59 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PG Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232f6fde'/%3E%3Cpath d='M4 5h8M4 8h8M4 11h8' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232f6496'/%3E%3Cpath d='M4 5h8M4 8h8M4 11h8' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <span class="brand">PG Studio</span>
-    <span class="sep">/</span>
-    <span id="schema" class="schema">…</span>
-    <span id="mode" class="badge" title="All queries run in READ ONLY transactions">read-only</span>
+    <span class="brand">
+      <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="3"/><path d="M4 5h8M4 8h8M4 11h8"/></svg>
+      PG Studio
+    </span>
+    <button id="jump-btn" type="button" class="jump-btn" aria-haspopup="dialog">
+      <span>Jump to table…</span><kbd id="jump-kbd">⌘K</kbd>
+    </button>
+    <span class="spacer"></span>
+    <button id="help-btn" type="button" class="icon-btn" aria-haspopup="dialog" title="Keyboard shortcuts (?)">?</button>
+    <span id="mode" class="badge">Read-only</span>
   </header>
 
   <div class="layout">
-    <aside class="sidebar">
-      <label class="schema-pick small muted">Schema
-        <select id="schema-select" aria-label="Schema"></select>
-      </label>
-      <input id="filter" type="search" placeholder="Filter tables" autocomplete="off" spellcheck="false">
-      <ul id="tables" class="tables" aria-label="Tables"></ul>
+    <aside class="sidebar" aria-label="Tables">
+      <label class="field-label" for="schema-select">Schema</label>
+      <select id="schema-select"></select>
+      <input id="filter" type="search" placeholder="Filter tables" autocomplete="off" spellcheck="false" aria-label="Filter tables">
+      <nav id="tables" class="tables"></nav>
       <p id="tables-status" class="muted small"></p>
     </aside>
 
     <main class="main">
-      <div id="empty" class="empty">
-        <p>Select a table on the left.</p>
+      <div id="error" class="banner banner-error" role="alert" hidden>
+        <span id="error-text"></span>
+        <button id="error-close" type="button" class="link-btn">Dismiss</button>
       </div>
+
+      <div id="empty" class="home"></div>
 
       <section id="view" class="view" hidden>
         <div class="view-head">
-          <div>
+          <div class="title-block">
             <h1 id="title"></h1>
-            <p class="muted small subtitle-row">
-              <span id="subtitle"></span>
-              <button id="count-btn" type="button" class="link-btn small" title="Run count(*) on the current view">Count rows</button>
-              <span id="count-result"></span>
-            </p>
+            <div id="facts" class="facts"></div>
           </div>
-          <div id="pager" class="pager">
-            <label class="small muted">Rows
-              <select id="page-size">
-                <option>25</option>
-                <option selected>50</option>
-                <option>100</option>
-              </select>
-            </label>
-            <button id="first" type="button" title="First page">«</button>
-            <button id="prev" type="button">‹ Prev</button>
-            <span id="page" class="small"></span>
-            <button id="next" type="button">Next ›</button>
+          <div class="tabs" role="tablist" aria-label="View">
+            <button id="tab-data" type="button" role="tab" aria-selected="true">Data</button>
+            <button id="tab-details" type="button" role="tab" aria-selected="false">Structure</button>
           </div>
-        </div>
-
-        <div class="tabs" role="tablist">
-          <button id="tab-data" type="button" role="tab" aria-selected="true">Data</button>
-          <button id="tab-details" type="button" role="tab" aria-selected="false">Details</button>
         </div>
 
         <div id="data-pane" class="pane">
           <div class="toolbar">
-            <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
+            <div class="search-wrap">
+              <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
+              <kbd class="search-kbd">/</kbd>
+            </div>
             <button id="add-filter" type="button">+ Filter</button>
             <div id="chips" class="chips" aria-label="Active filters"></div>
             <span class="spacer"></span>
@@ -82,46 +75,94 @@
           </div>
 
           <form id="filter-form" class="filter-form" hidden>
+            <span class="small muted">Show rows where</span>
             <select id="ff-col" aria-label="Column"></select>
-            <select id="ff-op" aria-label="Operator"></select>
+            <select id="ff-op" aria-label="Condition"></select>
             <input id="ff-val" type="text" placeholder="value" autocomplete="off" spellcheck="false" aria-label="Value">
             <button type="submit" class="primary">Apply</button>
             <button type="button" id="ff-cancel">Cancel</button>
           </form>
 
-          <p id="warning" class="warning small" hidden></p>
-          <p id="notice" class="notice small" hidden></p>
-          <div class="grid-wrap">
+          <p id="warning" class="banner banner-warn small" hidden></p>
+          <p id="notice" class="banner banner-info small" hidden></p>
+
+          <div id="grid-wrap" class="grid-wrap" tabindex="0" aria-label="Rows. Use arrow keys to move between cells.">
+            <div class="loading-bar" aria-hidden="true"></div>
             <table id="grid" class="grid">
               <thead></thead>
               <tbody></tbody>
             </table>
           </div>
+
+          <div class="statusbar">
+            <span id="row-info" class="small"></span>
+            <button id="count-btn" type="button" class="link-btn small" title="Run count(*) on the current view">Count rows</button>
+            <span id="count-result" class="small"></span>
+            <span class="spacer"></span>
+            <label class="small muted page-size">Rows per page
+              <select id="page-size">
+                <option>25</option>
+                <option selected>50</option>
+                <option>100</option>
+              </select>
+            </label>
+            <div class="pager" role="group" aria-label="Pages">
+              <button id="first" type="button" title="First page" aria-label="First page">«</button>
+              <button id="prev" type="button" title="Previous page ([)" aria-label="Previous page">‹</button>
+              <span id="page" class="small page-label"></span>
+              <button id="next" type="button" title="Next page (])" aria-label="Next page">›</button>
+            </div>
+          </div>
         </div>
 
         <div id="details-pane" class="pane details" hidden></div>
       </section>
-
-      <p id="error" class="error" role="alert" hidden></p>
     </main>
 
-    <aside id="inspector" class="inspector" hidden>
+    <aside id="inspector" class="inspector" hidden aria-label="Row details">
       <div class="inspector-head">
         <div>
           <div id="insp-col" class="insp-col"></div>
-          <div id="insp-type" class="muted small mono"></div>
+          <div id="insp-type" class="muted small"></div>
         </div>
-        <button id="insp-close" type="button" aria-label="Close">×</button>
+        <button id="insp-close" type="button" class="icon-btn" aria-label="Close (Esc)" title="Close (Esc)">×</button>
       </div>
       <pre id="insp-value" class="insp-value"></pre>
       <p id="insp-note" class="muted small"></p>
       <div class="inspector-actions">
         <button id="insp-copy" type="button">Copy value</button>
-        <button id="insp-copy-row" type="button">Copy row as JSON</button>
         <button id="insp-filter" type="button">Filter by this value</button>
       </div>
       <div id="insp-links" class="insp-links"></div>
+      <div class="insp-row-head">
+        <h2>This row</h2>
+        <button id="insp-copy-row" type="button" class="link-btn small">Copy as JSON</button>
+      </div>
+      <dl id="insp-row" class="insp-row"></dl>
     </aside>
   </div>
+
+  <dialog id="jump" class="jump" aria-label="Jump to table">
+    <input id="jump-input" type="search" placeholder="Type a table name" autocomplete="off" spellcheck="false" aria-label="Table name" aria-controls="jump-list">
+    <ul id="jump-list" class="jump-list" role="listbox"></ul>
+    <p class="jump-hint small muted"><kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open, <kbd>Esc</kbd> to close</p>
+  </dialog>
+
+  <dialog id="help" class="help" aria-labelledby="help-title">
+    <div class="help-head">
+      <h2 id="help-title">Keyboard shortcuts</h2>
+      <button id="help-close" type="button" class="icon-btn" aria-label="Close">×</button>
+    </div>
+    <dl class="keys">
+      <dt><kbd class="mod">⌘</kbd><kbd>K</kbd></dt><dd>Jump to any table or view</dd>
+      <dt><kbd>/</kbd></dt><dd>Search the current table</dd>
+      <dt><kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd></dt><dd>Move between cells</dd>
+      <dt><kbd>Enter</kbd></dt><dd>Open the selected row</dd>
+      <dt><kbd class="mod">⌘</kbd><kbd>C</kbd></dt><dd>Copy the selected cell</dd>
+      <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next page</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close panel, menu or dialog</dd>
+      <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+    </dl>
+  </dialog>
 </body>
 </html>

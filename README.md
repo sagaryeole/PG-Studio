@@ -4,18 +4,20 @@ A small local PostgreSQL viewer. It lists the tables, views and materialized vie
 
 What you can do:
 
-- **Sort** by clicking a column header (ascending, descending, off).
-- **Filter** with `+ Filter`: `=`, `≠`, `<`, `≤`, `>`, `≥`, contains, doesn't contain, starts with, ends with, is null, is not null. Filters combine with AND and show as chips; click a chip to edit it.
-- **Search** across the table's text and enum columns.
-- **Follow foreign keys**: the `→` in a foreign-key cell opens the referenced row. The side panel also lists the tables that reference the selected row ("Referenced by"). Composite keys work. Browser Back returns to where you were.
-- **Columns menu**: hide columns, freeze the first visible column, reset. Drag a header's right edge to resize. These settings are remembered per table in this browser.
+- **Find a table fast**: press ⌘K (Ctrl K on Windows/Linux) and type part of a name. It searches every schema and lists recently opened tables first. The start page shows recent and largest tables.
+- **Sort and filter from the column header**: click a name to sort, or use its ▾ menu to sort, filter, show only rows with or without a value, or hide the column. `+ Filter` builds any condition: `=`, `≠`, `<`, `≤`, `>`, `≥`, contains, doesn't contain, starts with, ends with, is empty, has a value. Filters combine with AND and show as chips you can click to edit.
+- **Search** across the table's text and enum columns (press `/`).
+- **See the whole row**: click any cell (or move with the arrow keys and press Enter). The side panel shows the full value, then every field of that row, so wide tables are readable without scrolling sideways.
+- **Follow foreign keys**: the ↗ in a foreign-key cell opens the referenced row. The side panel also lists the rows that point to this one. Composite and cross-schema keys work, and browser Back returns to where you were.
+- **Columns menu**: hide columns, keep the first column visible while scrolling, reset. Drag a header's edge to resize. These settings are remembered per table in this browser.
 - **Export** the current view (sort, filters, search) as CSV or JSON, up to 10,000 rows.
-- **Side panel**: pretty-printed JSON, byte counts for bytea, timestamps in your local time, copy value or whole row as JSON, "Filter by this value".
-- **Schemas**: switch schema in the sidebar. Views and materialized views are listed and labelled. Foreign keys that cross schemas can be followed.
-- **Fast paging**: in the default order, pages are fetched by primary key (keyset paging), so page 9,000 is as fast as page 1. With a custom sort it falls back to page numbers.
-- **Details tab**: sizes, row stats, last vacuum/analyze, columns with defaults and comments, indexes with size and scan counts, constraints, relationships, triggers, and a DDL script rebuilt from the catalog.
-- **Exact count** on demand ("Count rows"), respecting filters and search, bounded by the statement timeout.
-- The URL holds the schema, table, page, sort, filters, search and tab, so you can bookmark or share a view.
+- **Schemas**: switch schema in the sidebar. Tables and views are listed separately.
+- **Fast paging**: in the default order, pages are fetched by primary key (keyset paging), so page 9,000 is as fast as page 1. With a custom sort it falls back to page numbers. Paging lives under the grid; `[` and `]` also page.
+- **Structure tab**: sizes, row stats, last vacuum/analyze, columns with defaults and comments, indexes with size and usage, constraints, relationships, triggers, and a create script rebuilt from the catalog.
+- **Exact count** on demand, respecting filters and search, bounded by the statement timeout.
+- The URL holds the schema, table, page, sort, filters, search and tab, so you can bookmark or share a view. A bookmark whose filters no longer apply opens the plain table and says why.
+
+Keyboard: ⌘K jump to table, `/` search, arrow keys move between cells, Enter opens the row, ⌘C copies the selected cell, `[` `]` page, Esc closes panels and menus, `?` lists all shortcuts.
 
 It is **read-only today**. The code is laid out so that single-cell editing can be added later without touching the read path. See [Edit mode: design for later](#edit-mode-design-for-later).
 
@@ -199,7 +201,7 @@ src/
   config.ts        env parsing
   db.ts            pool + withReadOnly (write pool goes here later)
   catalog.ts       schema/table/column/PK/FK lookups, role privilege check
-  details.ts       details tab (sizes, stats, indexes, constraints, triggers, DDL) and exact count
+  details.ts       Structure tab (sizes, stats, indexes, constraints, triggers, DDL) and exact count
   query.ts         sort/filter/search: validation and WHERE/ORDER BY building
   rows.ts          builds the SELECT; keyset/offset page fetch, export fetch, CSV/JSON output
   security.ts      Host check, CSP headers, same-origin guard for writes

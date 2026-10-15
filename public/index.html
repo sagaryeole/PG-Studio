@@ -18,6 +18,9 @@
 
   <div class="layout">
     <aside class="sidebar">
+      <label class="schema-pick small muted">Schema
+        <select id="schema-select" aria-label="Schema"></select>
+      </label>
       <input id="filter" type="search" placeholder="Filter tables" autocomplete="off" spellcheck="false">
       <ul id="tables" class="tables" aria-label="Tables"></ul>
       <p id="tables-status" class="muted small"></p>
@@ -32,9 +35,13 @@
         <div class="view-head">
           <div>
             <h1 id="title"></h1>
-            <p id="subtitle" class="muted small"></p>
+            <p class="muted small subtitle-row">
+              <span id="subtitle"></span>
+              <button id="count-btn" type="button" class="link-btn small" title="Run count(*) on the current view">Count rows</button>
+              <span id="count-result"></span>
+            </p>
           </div>
-          <div class="pager">
+          <div id="pager" class="pager">
             <label class="small muted">Rows
               <select id="page-size">
                 <option>25</option>
@@ -42,46 +49,57 @@
                 <option>100</option>
               </select>
             </label>
+            <button id="first" type="button" title="First page">«</button>
             <button id="prev" type="button">‹ Prev</button>
             <span id="page" class="small"></span>
             <button id="next" type="button">Next ›</button>
           </div>
         </div>
-        <div class="toolbar">
-          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
-          <button id="add-filter" type="button">+ Filter</button>
-          <div id="chips" class="chips" aria-label="Active filters"></div>
-          <span class="spacer"></span>
-          <div class="menu-wrap">
-            <button id="columns-btn" type="button" aria-haspopup="true" aria-expanded="false">Columns</button>
-            <div id="columns-menu" class="menu" hidden></div>
-          </div>
-          <div class="menu-wrap">
-            <button id="export-btn" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
-            <div id="export-menu" class="menu" hidden>
-              <button type="button" data-format="csv">Download CSV</button>
-              <button type="button" data-format="json">Download JSON</button>
-              <p id="export-note" class="small muted"></p>
+
+        <div class="tabs" role="tablist">
+          <button id="tab-data" type="button" role="tab" aria-selected="true">Data</button>
+          <button id="tab-details" type="button" role="tab" aria-selected="false">Details</button>
+        </div>
+
+        <div id="data-pane" class="pane">
+          <div class="toolbar">
+            <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
+            <button id="add-filter" type="button">+ Filter</button>
+            <div id="chips" class="chips" aria-label="Active filters"></div>
+            <span class="spacer"></span>
+            <div class="menu-wrap">
+              <button id="columns-btn" type="button" aria-haspopup="true" aria-expanded="false">Columns</button>
+              <div id="columns-menu" class="menu" hidden></div>
+            </div>
+            <div class="menu-wrap">
+              <button id="export-btn" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+              <div id="export-menu" class="menu" hidden>
+                <button type="button" data-format="csv">Download CSV</button>
+                <button type="button" data-format="json">Download JSON</button>
+                <p id="export-note" class="small muted"></p>
+              </div>
             </div>
           </div>
+
+          <form id="filter-form" class="filter-form" hidden>
+            <select id="ff-col" aria-label="Column"></select>
+            <select id="ff-op" aria-label="Operator"></select>
+            <input id="ff-val" type="text" placeholder="value" autocomplete="off" spellcheck="false" aria-label="Value">
+            <button type="submit" class="primary">Apply</button>
+            <button type="button" id="ff-cancel">Cancel</button>
+          </form>
+
+          <p id="warning" class="warning small" hidden></p>
+          <p id="notice" class="notice small" hidden></p>
+          <div class="grid-wrap">
+            <table id="grid" class="grid">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
 
-        <form id="filter-form" class="filter-form" hidden>
-          <select id="ff-col" aria-label="Column"></select>
-          <select id="ff-op" aria-label="Operator"></select>
-          <input id="ff-val" type="text" placeholder="value" autocomplete="off" spellcheck="false" aria-label="Value">
-          <button type="submit" class="primary">Apply</button>
-          <button type="button" id="ff-cancel">Cancel</button>
-        </form>
-
-        <p id="warning" class="warning small" hidden></p>
-        <p id="notice" class="notice small" hidden></p>
-        <div class="grid-wrap">
-          <table id="grid" class="grid">
-            <thead></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <div id="details-pane" class="pane details" hidden></div>
       </section>
 
       <p id="error" class="error" role="alert" hidden></p>

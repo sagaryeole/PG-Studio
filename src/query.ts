@@ -6,7 +6,7 @@
  * catalog names are quoted into SQL. Every value is a bind parameter.
  */
 import pg from "pg";
-import type { ColumnMeta, TableMeta } from "./catalog.js";
+import { hasCtid, type ColumnMeta, type TableMeta } from "./catalog.js";
 import { HttpError } from "./errors.js";
 
 const q = pg.escapeIdentifier;
@@ -186,7 +186,7 @@ export function buildOrderBy(table: TableMeta, spec: ViewSpec): string {
   const tiebreak = table.primaryKey.filter((k) => k !== spec.sort?.column);
   if (table.primaryKey.length > 0) {
     terms.push(...tiebreak.map(q));
-  } else if (table.kind === "table") {
+  } else if (hasCtid(table.kind)) {
     terms.push("ctid");
   }
   return terms.length ? `ORDER BY ${terms.join(", ")}` : "";

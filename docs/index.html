@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PG Studio: a fast, read-only PostgreSQL browser (open source)</title>
+  <meta name="description" content="PG Studio is a free, open-source PostgreSQL viewer that runs locally. Browse tables, filter and sort, follow foreign keys and inspect structure, with read-only safety built in. No SQL from the browser.">
+  <meta name="keywords" content="PostgreSQL GUI, Postgres viewer, PostgreSQL browser, database viewer, read-only database client, pgAdmin alternative, open source, local, Node.js">
+  <meta name="author" content="sagaryeole">
+  <meta name="theme-color" content="#2f6496">
+  <link rel="canonical" href="https://sagaryeole.github.io/PG-Studio/">
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PG Studio">
+  <meta property="og:title" content="PG Studio: a fast, read-only PostgreSQL browser">
+  <meta property="og:description" content="Browse PostgreSQL tables, filter, follow foreign keys and inspect structure in a clean local web UI. Open source, Apache-2.0 licensed.">
+  <meta property="og:url" content="https://sagaryeole.github.io/PG-Studio/">
+  <meta property="og:image" content="https://sagaryeole.github.io/PG-Studio/assets/social-preview.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="PG Studio: a fast, read-only PostgreSQL browser that runs on your machine">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PG Studio: a fast, read-only PostgreSQL browser">
+  <meta name="twitter:description" content="Browse PostgreSQL tables, filter, follow foreign keys and inspect structure. Local, read-only, open source.">
+  <meta name="twitter:image" content="https://sagaryeole.github.io/PG-Studio/assets/social-preview.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "PG Studio",
+    "description": "A fast, read-only PostgreSQL browser that runs locally. Browse tables, filter, follow foreign keys and inspect structure.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Linux, Windows",
+    "softwareRequirements": "Node.js 20.6+, PostgreSQL 14+",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "url": "https://sagaryeole.github.io/PG-Studio/",
+    "downloadUrl": "https://github.com/sagaryeole/PG-Studio",
+    "codeRepository": "https://github.com/sagaryeole/PG-Studio",
+    "image": "https://sagaryeole.github.io/PG-Studio/assets/social-preview.png",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #f3f5f8; --panel: #ffffff; --line: #e0e4ea; --text: #18202c; --muted: #5e6a7d;
+      --accent: #2f6496; --accent-strong: #24507a; --accent-soft: #e4edf7; --on-accent: #ffffff;
+      --code-bg: #18202c; --code-text: #e5e9ef;
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #11151b; --panel: #181d25; --line: #272e39; --text: #e5e9ef; --muted: #95a0b1;
+        --accent: #8fb6e3; --accent-strong: #b5cfee; --accent-soft: #1d2d42; --on-accent: #0e1b2b;
+        --code-bg: #0b0e13; --code-text: #e5e9ef;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+    header.top { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; }
+    .brand img { width: 30px; height: 30px; }
+    nav.links { display: flex; gap: 20px; font-size: 15px; }
+    nav.links a { color: var(--muted); text-decoration: none; }
+    nav.links a:hover { color: var(--text); }
+
+    .hero { text-align: center; padding: 56px 0 28px; }
+    .hero img.logo { width: 84px; height: 84px; }
+    h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.08; letter-spacing: -0.03em; margin: 22px auto 16px; max-width: 16ch; }
+    .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 40em; margin: 0 auto; }
+    .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+    .btn { display: inline-block; padding: 12px 22px; border-radius: 10px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    .btn:hover { filter: brightness(1.05); }
+    .meta { margin-top: 16px; font-size: 14px; color: var(--muted); }
+
+    .demo { margin: 40px auto 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--line);
+            box-shadow: 0 30px 70px rgba(16,24,40,.18), 0 4px 14px rgba(16,24,40,.06); background: var(--panel); }
+    .demo img { display: block; width: 100%; height: auto; }
+
+    section { padding: 72px 0 0; }
+    h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -0.02em; margin: 0 0 10px; }
+    .sub { color: var(--muted); margin: 0 0 30px; max-width: 42em; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; }
+    .card h3 { margin: 0 0 6px; font-size: 17px; }
+    .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+    .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 18px; }
+    figure { margin: 0; }
+    figure img { width: 100%; height: auto; display: block; border-radius: 10px; border: 1px solid var(--line); }
+    figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; }
+
+    pre { background: var(--code-bg); color: var(--code-text); padding: 20px 22px; border-radius: 12px; overflow-x: auto;
+          font: 14.5px/1.65 var(--mono); margin: 0; }
+    pre .c { color: #8b97a8; }
+    code { font-family: var(--mono); font-size: .92em; }
+
+    ul.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+    ul.checks li { padding-left: 30px; position: relative; }
+    ul.checks li::before { content: "✓"; position: absolute; left: 4px; color: var(--accent); font-weight: 700; }
+
+    footer { margin-top: 90px; padding: 30px 0 50px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+    @media (max-width: 640px) {
+      nav.links a.hide-sm { display: none; }
+      .hero { padding-top: 32px; }
+      section { padding-top: 56px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap top">
+    <a class="brand" href="./"><img src="assets/logo.svg" alt="" width="30" height="30">PG Studio</a>
+    <nav class="links">
+      <a href="#features" class="hide-sm">Features</a>
+      <a href="#quick-start">Quick start</a>
+      <a href="#security" class="hide-sm">Security</a>
+      <a href="https://github.com/sagaryeole/PG-Studio">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="wrap hero">
+      <img class="logo" src="assets/logo.svg" alt="PG Studio logo" width="84" height="84">
+      <h1>A fast, read-only PostgreSQL browser</h1>
+      <p class="lede">Browse tables and views, filter and sort, follow foreign keys and read table structure in a clean web UI that runs on your machine. The browser never sends SQL, and every query is read-only.</p>
+      <div class="cta">
+        <a class="btn primary" href="#quick-start">Get started</a>
+        <a class="btn" href="https://github.com/sagaryeole/PG-Studio">View on GitHub</a>
+      </div>
+      <p class="meta">Free and open source · Apache-2.0 license · PostgreSQL 14–17 · Node.js 20.6+</p>
+      <div class="demo">
+        <img src="assets/demo.gif" width="1200" height="717" alt="PG Studio demo: jump to a table, filter and sort rows, open a row, follow a foreign key and view the table structure">
+      </div>
+    </div>
+
+    <section id="features">
+      <div class="wrap">
+        <h2>Everything you need to look at your data</h2>
+        <p class="sub">And nothing that can change it. PG Studio does one job well: lets you explore a PostgreSQL database quickly and safely.</p>
+        <div class="grid">
+          <div class="card"><h3>⌘K jump to table</h3><p>Fuzzy search across every schema, with recently opened tables first.</p></div>
+          <div class="card"><h3>Sort, filter, search</h3><p>Server-side sorting, filter chips with 12 operators, and search across text columns.</p></div>
+          <div class="card"><h3>Follow foreign keys</h3><p>Jump to the referenced row, see the rows that point back, and use Back to return.</p></div>
+          <div class="card"><h3>Row inspector</h3><p>Full values with pretty-printed JSON, plus every field of the row in a side panel.</p></div>
+          <div class="card"><h3>Structure tab</h3><p>Sizes, stats, indexes and usage, constraints, triggers, and a generated <code>CREATE</code> script.</p></div>
+          <div class="card"><h3>Fast deep paging</h3><p>Keyset pagination: page 9,000 is as fast as page 1. 6 ms vs 1.2 s with OFFSET on 1M rows.</p></div>
+          <div class="card"><h3>CSV and JSON export</h3><p>Export the current view with its filters and sort, with formula-injection protection.</p></div>
+          <div class="card"><h3>Shareable URLs</h3><p>Schema, table, filters, sort, page and tab live in the URL. Bookmark any view.</p></div>
+          <div class="card"><h3>Keyboard first, dark mode</h3><p>Arrow keys, Enter, <code>/</code>, <code>[</code> <code>]</code> and <code>?</code>. Follows your OS theme.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshots">
+      <div class="wrap">
+        <h2>See it in action</h2>
+        <p class="sub">Screenshots use the bundled demo database. All data is generated.</p>
+        <div class="shots">
+          <figure><img src="assets/screenshot-filters.png" width="1440" height="860" loading="lazy" alt="Orders table filtered by status and total, sorted by date"><figcaption>Filter chips and sorting</figcaption></figure>
+          <figure><img src="assets/screenshot-inspector.png" width="1440" height="860" loading="lazy" alt="Row inspector showing pretty-printed JSONB and foreign-key links"><figcaption>Row inspector with JSONB and relationships</figcaption></figure>
+          <figure><img src="assets/screenshot-structure.png" width="1440" height="860" loading="lazy" alt="Structure tab with sizes, stats, columns and indexes"><figcaption>Structure tab</figcaption></figure>
+          <figure><img src="assets/screenshot-dark.png" width="1440" height="860" loading="lazy" alt="PG Studio in dark mode"><figcaption>Dark mode</figcaption></figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="quick-start">
+      <div class="wrap">
+        <h2>Quick start</h2>
+        <p class="sub">Try it in about 30 seconds with the bundled demo database (needs Node.js 20.6+ and Docker).</p>
+<pre><span class="c"># clone and install</span>
+git clone https://github.com/sagaryeole/PG-Studio.git
+cd PG-Studio
+npm install
+
+<span class="c"># start a throwaway PostgreSQL with ~430k rows of fake data</span>
+npm run demo:db
+
+<span class="c"># open http://127.0.0.1:4321</span>
+npm run demo</pre>
+        <p class="sub" style="margin-top:22px">Using your own database? Create a SELECT-only role, put its URL in <code>.env</code> and run <code>npm run dev</code>. <a href="https://github.com/sagaryeole/PG-Studio#use-it-with-your-own-database">Full instructions →</a></p>
+      </div>
+    </section>
+
+    <section id="security">
+      <div class="wrap">
+        <h2>Safe to point at a real database</h2>
+        <p class="sub">Every control is tested against hostile input. <a href="https://github.com/sagaryeole/PG-Studio/blob/main/SECURITY.md">Read the security model →</a></p>
+        <ul class="checks">
+          <li><b>No SQL from the browser.</b> Identifiers are resolved from <code>pg_catalog</code> and quoted; every value is a bind parameter.</li>
+          <li><b>Read-only twice over.</b> <code>BEGIN READ ONLY</code> with a mandatory rollback, plus a SELECT-only role.</li>
+          <li><b>Bounded reads.</b> Row limits, cell size cuts, capped exports and a per-query <code>statement_timeout</code>.</li>
+          <li><b>Localhost hardening.</b> Binds to <code>127.0.0.1</code>, checks the <code>Host</code> header against DNS rebinding, and sends a strict CSP.</li>
+          <li><b>XSS-safe.</b> Database values are always rendered as text.</li>
+          <li><b>No credential leaks.</b> Connection strings are redacted from logs and errors.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>PG Studio · Apache-2.0 License · <a href="https://github.com/sagaryeole/PG-Studio">GitHub</a> · <a href="https://github.com/sagaryeole/PG-Studio/blob/main/CONTRIBUTING.md">Contribute</a></span>
+      <span>PostgreSQL is a trademark of the PostgreSQL Community Association of Canada. Not affiliated.</span>
+    </div>
+  </footer>
+</body>
+</html>

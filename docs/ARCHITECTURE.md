@@ -6,7 +6,8 @@ PG Studio is a single Node.js process: an Express server that serves a static fr
 flowchart LR
   B["Browser<br/>public/app.js"] -- "GET /api/… (no SQL)" --> S["Express<br/>src/server.ts"]
   S --> SEC["security.ts<br/>Host check · CSP · same-origin guard"]
-  SEC --> R["routes/read.ts"]
+  SEC --> PL["pools.ts<br/>?conn &amp; ?db → pool"]
+  PL --> R["routes/read.ts · routines.ts"]
   R --> C["catalog.ts<br/>resolve table + columns<br/>from pg_catalog"]
   R --> Q["query.ts<br/>validate sort / filters / search"]
   R --> RW["rows.ts<br/>keyset / offset SELECT, export"]
@@ -20,15 +21,19 @@ flowchart LR
 ```
 src/
   server.ts        Express wiring, static files, startup role check
-  config.ts        env parsing
+  config.ts        env parsing, connections.json
+  pools.ts         one pool per connection, plus on-demand pools for other databases (LRU)
   db.ts            pool + withReadOnly (write pool goes here later)
   catalog.ts       schema/table/column/PK/FK lookups, role privilege check
+  routines.ts      functions / procedures / aggregates: list, flags, source, trigger usage
   details.ts       Structure tab (sizes, stats, indexes, constraints, triggers, DDL) and exact count
   query.ts         sort/filter/search: validation and WHERE/ORDER BY building
   rows.ts          builds the SELECT; keyset/offset page fetch, export fetch, CSV/JSON output
   security.ts      Host check, CSP headers, same-origin guard for writes
   errors.ts        HttpError + safe PostgreSQL error mapping
   routes/read.ts   /meta, /schemas, /tables, /tables/:name (+ /details, /count, /export)
+  routes/connections.ts  /connections, /databases
+  routes/routines.ts     /routines, /routines/:oid
 public/
   index.html, app.js, styles.css     the whole UI, no framework, no build
 demo/
@@ -40,11 +45,12 @@ scripts/
 ## How a request is handled
 
 1. **`security.ts`** rejects any request whose `Host` isn't `127.0.0.1:PORT` or `localhost:PORT` (DNS rebinding) and sets a strict CSP and related headers. Non-GET requests also need a same-site `Origin` and an `x-pg-studio: 1` header.
-2. **`routes/read.ts`** validates numeric parameters and passes the table name to `catalog.ts` **only as a bind parameter** in a `pg_class` lookup. An unknown or unreadable table is a 404.
-3. **`query.ts`** checks the sort column and each filter's column against the resolved catalog columns, maps each operator to fixed SQL, and turns every value into a bind parameter (with LIKE wildcards escaped).
-4. **`rows.ts`** builds the `SELECT` from catalog identifiers quoted with `pg.escapeIdentifier`, cuts long values inside PostgreSQL, and chooses keyset or offset paging.
-5. **`db.ts`** runs everything in `BEGIN TRANSACTION READ ONLY` with a per-transaction `statement_timeout`, and **always rolls back**.
-6. **`errors.ts`** maps known PostgreSQL error codes to safe messages and redacts connection strings from anything logged.
+2. **`pools.ts`** turns `?conn=&db=` into a pool. The connection id must be one from the config and the database must be one the role may `CONNECT` to; anything else is a 404 before a pool is created.
+3. **`routes/read.ts`** validates numeric parameters and passes the table name to `catalog.ts` **only as a bind parameter** in a `pg_class` lookup. An unknown or unreadable table is a 404.
+4. **`query.ts`** checks the sort column and each filter's column against the resolved catalog columns, maps each operator to fixed SQL, and turns every value into a bind parameter (with LIKE wildcards escaped).
+5. **`rows.ts`** builds the `SELECT` from catalog identifiers quoted with `pg.escapeIdentifier`, cuts long values inside PostgreSQL, and chooses keyset or offset paging.
+6. **`db.ts`** runs everything in `BEGIN TRANSACTION READ ONLY` with a per-transaction `statement_timeout`, and **always rolls back**.
+7. **`errors.ts`** maps known PostgreSQL error codes to safe messages and redacts connection strings from anything logged.
 
 ## Design decisions
 
@@ -53,6 +59,8 @@ scripts/
 - **Text in, text out.** Values travel as PostgreSQL text output, which is also the input format for every type, so a future editor can send back exactly what the grid shows.
 - **Bounded everything.** Page size, cell length, export rows and query time all have hard limits.
 - **No framework, no build.** The front end is about 1,900 lines of plain JavaScript. That keeps the attack surface small, lets the CSP forbid inline script and style, and means there's nothing to compile.
+- **Credentials stay on the server.** Connections come from the environment or `connections.json`. The browser picks one by id and never sees a URL or password, and no endpoint accepts connection details.
+- **Code is shown, never run.** Functions and procedures are read from the catalog (`pg_get_functiondef`); nothing calls them.
 - **Localhost only.** The bind address isn't configurable. Running PG Studio for other people would need authentication, which is out of scope.
 
 ## Known limitations

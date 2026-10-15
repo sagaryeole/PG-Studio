@@ -44,7 +44,10 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 
 | | |
 |---|---|
-| **⌘K jump to table** | Fuzzy search across every schema. Recently opened tables come first. |
+| **Saved connections** | Name your servers in `connections.json` and switch between them from the top bar. Credentials stay on the server; the browser only sees names. |
+| **Every database on a server** | A database switcher lists each database the role may connect to, with its size. Each gets its own small pool, opened on first use. |
+| **Functions and procedures** | Browse functions, procedures and aggregates next to tables: signature, return type, language, volatility, `SECURITY DEFINER`, owner, full source, and the triggers that call them. View only; nothing is ever executed. |
+| **⌘K jump anywhere** | Fuzzy search across every schema's tables, views and functions. Recently opened tables come first. |
 | **Sort and filter from the header** | `=` `≠` `<` `≤` `>` `≥`, contains, starts/ends with, empty / has a value. Filters combine with AND and show as editable chips. |
 | **Full-text-ish search** | Press `/` to search across a table's text and enum columns. |
 | **Row inspector** | Click any cell to see its full value (JSON pretty-printed) and every field of that row, so wide tables stay readable. |
@@ -52,8 +55,8 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 | **Structure tab** | Sizes, row stats, last vacuum/analyze, columns with defaults and comments, indexes with size and usage, constraints, relationships, triggers, and a `CREATE` script rebuilt from the catalog. |
 | **Keyset paging** | Pages are fetched by primary key, so deep pages are fast. Custom sorts fall back to `OFFSET`. |
 | **Export** | Download the current view (sort, filters, search) as CSV or JSON, up to 10,000 rows by default. CSV is protected against spreadsheet formula injection. |
-| **Shareable URLs** | The URL holds schema, table, page, sort, filters, search and tab, so you can bookmark or share a view. |
-| **Tables, views, materialized views** | Switch schemas in the sidebar. Tables and views are listed separately. |
+| **Shareable URLs** | The URL holds connection, database, schema, table, page, sort, filters, search and tab, so you can bookmark or share a view. |
+| **Tables, views, materialized views** | Pick a schema from the top bar. Tables, views, functions and procedures are listed separately in the sidebar. |
 | **Column controls** | Resize, hide, and freeze the first column. Settings are remembered per table. |
 | **Keyboard first** | Arrow keys move between cells, Enter opens the row, ⌘C copies a cell, `[` `]` page, `?` lists every shortcut. |
 | **Light and dark mode** | Follows your OS setting. |
@@ -153,11 +156,31 @@ All configuration is through environment variables (`.env`):
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DATABASE_URL` | (required) | Never logged. Error messages are redacted. Use `127.0.0.1`, not `localhost`: `localhost` makes Node try IPv6 (`::1`) first, which fails against some Docker setups. |
+| `DATABASE_URL` | (required unless `connections.json` exists) | Never logged. Error messages are redacted. Use `127.0.0.1`, not `localhost`: `localhost` makes Node try IPv6 (`::1`) first, which fails against some Docker setups. |
 | `PORT` | `4321` | Always bound to `127.0.0.1`. The host isn't configurable, on purpose. |
-| `PG_SCHEMA` | `public` | Schema shown first. Any schema the role has `USAGE` on can be picked in the sidebar. |
+| `CONNECTIONS_FILE` | `connections.json` | Saved connections; see [Several servers or databases](#several-servers-or-databases). |
+| `DATABASE_LABEL` | `Default` | Name shown for the `DATABASE_URL` connection. |
+| `PG_SCHEMA` | `public` | Schema shown first (a connection's `"schema"` overrides it). Any schema the role has `USAGE` on can be picked from the top bar. |
 | `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. Exports use it too. |
 | `EXPORT_MAX_ROWS` | `10000` | Max rows in one CSV/JSON export (max 100,000). |
+
+### Several servers or databases
+
+**Databases on the same server** need nothing extra: pick one from the database menu in the top bar. The list shows every database the role may `CONNECT` to. Grants are per database, so run the read-only role's `GRANT` lines in each database you want to browse.
+
+**Several servers, or friendlier names:** list them in `connections.json` next to the app (or point `CONNECTIONS_FILE` at another path), then restart:
+
+```json
+[
+  { "name": "Local dev", "url": "postgres://pgstudio_ro@127.0.0.1:5432/myapp" },
+  { "name": "Staging", "url": "postgres://readonly@staging-db:5432/myapp?sslmode=verify-full", "schema": "public" }
+]
+```
+
+- `connections.json` is gitignored. Start from [`connections.example.json`](connections.example.json).
+- Leave the password out of the URL and put it in [`~/.pgpass`](https://www.postgresql.org/docs/current/libpq-pgpass.html) instead; node-postgres reads it. If a URL does contain a password, the server warns until the file is `chmod 600`.
+- `DATABASE_URL` still works and is listed first, as "Default" (rename it with `DATABASE_LABEL`).
+- Every connection gets the same startup check: if its role can write, the server warns and the badge turns red while it's selected.
 
 ### Troubleshooting
 

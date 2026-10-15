@@ -30,6 +30,11 @@ Ideas and votes are welcome in [issues](https://github.com/sagaryeole/PG-Studio/
 - Side panel shows the whole row and its relationships in plain words
 - Broken bookmarks fall back to the plain table with an explanation
 
+**Connections and code**
+- Saved connections in `connections.json`, with a connection / database / schema switcher
+- Every database on a server, each with its own pool opened on demand
+- Functions, procedures and aggregates: signature, flags, source and the triggers that use them (view only)
+
 ## 🔜 Next (small)
 
 - [ ] **Keyset paging for custom sorts on indexed columns.** Needs NULL-aware cursor conditions; worth it for paging deep into a sorted big table.
@@ -43,5 +48,6 @@ Ideas and votes are welcome in [issues](https://github.com/sagaryeole/PG-Studio/
 ## 🚫 Not planned
 
 - **SQL console.** It would need a SQL parser or a separate tightly limited role, and it's the feature most likely to expose data. Other tools do it well.
-- **Saved connections / multiple databases.** That means storing credentials. Run one instance per database, each with its own `.env`.
+- **Adding connections from the browser.** It would mean accepting credentials over HTTP and storing them. Connections are edited in `connections.json` (passwords preferably in `~/.pgpass`).
+- **Running functions or procedures.** They can have side effects, which breaks the read-only promise. PG Studio shows their source only.
 - **Network or multi-user mode.** PG Studio has no authentication and binds to `127.0.0.1` on purpose.

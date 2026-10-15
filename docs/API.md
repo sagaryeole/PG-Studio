@@ -6,15 +6,23 @@ PG Studio's front end talks to a small JSON API under `/api`. It's served on `12
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/meta` | Default schema, connected role and whether it can write, page limits, filter operators, `capabilities.edit` (false today) |
+| `GET /api/connections` | Saved connections: `id`, `name`, `user`, `host`, `port`. Never a password or URL. |
+| `GET /api/databases?conn=` | Databases on that connection's server the role may `CONNECT` to, with sizes, plus the connection's own (`default`) |
+| `GET /api/meta` | Connection id and database, default schema, connected role and whether it can write, page limits, filter operators, `capabilities.edit` (false today) |
 | `GET /api/schemas` | Schemas the role has `USAGE` on (system schemas left out), with relation counts |
 | `GET /api/tables?schema=` | Tables, views and materialized views the role can SELECT, with planner row estimates. 404 for a schema without `USAGE`. |
 | `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, category, PK, generated, `canUpdate`), primary key, foreign keys both ways, one page of rows, `hasNext`, truncated-cell list |
 | `GET /api/tables/:name/details` | Sizes, stats, column defaults and comments, indexes, constraints, triggers, view definition, generated DDL |
 | `GET /api/tables/:name/count` | Exact `count(*)` of the current view (filters and search apply) |
+| `GET /api/routines?schema=` | Functions, procedures, aggregates and window functions in the schema (not ones owned by extensions): `oid`, `name`, `kind`, `args`, `returns`, `language` |
+| `GET /api/routines/:oid` | One routine: flags (volatility, strict, `SECURITY DEFINER`, leakproof, parallel), owner, comment, `definition` from `pg_get_functiondef` (aggregates get a summary instead), and `usedByTriggers`. 404 unless its schema is readable. |
 | `GET /api/tables/:name/export?format=csv\|json` | The current view as a download, up to `EXPORT_MAX_ROWS`. The headers `X-Export-Rows`, `X-Export-Limit-Hit` and `X-Export-Cut-Cells` report what was included. |
 
 Rows are returned as arrays in column order (matching `table.columns`), with every value in PostgreSQL's text output format, or `null`.
+
+## Connection and database
+
+Every endpoint except `/connections` takes `conn` (a connection `id`, default: the first) and `db` (a database name, default: the one in the connection's URL). An unknown connection, or a database the role can't `CONNECT` to, is a 404. Other databases are opened with the connection's own credentials.
 
 ## View parameters
 

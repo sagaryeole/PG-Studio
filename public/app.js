@@ -30,7 +30,7 @@ const state = {
   tablesSchema: null, // schema the sidebar list was loaded for
   tables: [],
   allTables: null, // every relation in every schema, for the jump dialog
-  /** { schema, name, page, pageSize, sort, filters, q, cursor: {dir, value} | null } */
+  /** { schema, name, page, pageSize, sort, filters: [{c, op, v?, off?}], match: "all"|"any", q, cursor: {dir, value} | null } */
   current: null,
   tab: "data", // "data" | "details"
   data: null, // last /api/tables/:name response
@@ -38,7 +38,11 @@ const state = {
   selected: null, // { r, c } selected cell (c = index into table.columns)
   seq: 0, // guards against out-of-order responses
   countSeq: 0,
-  editingFilter: -1,
+  panelOpen: false, // filter panel visible
+  draft: null, // { match, rows: [{on, c, op, v}] } while the panel is open
+  sqlOpen: false, // SQL preview shown in the panel
+  sqlSeq: 0,
+  sql: "",
   prefs: null, // column prefs for the current table
   jumpItems: [],
   pendingError: null, // shown once the next table load succeeds
@@ -134,7 +138,10 @@ function viewQuery(cur, extra = {}) {
     p.set("sort", cur.sort.column);
     p.set("dir", cur.sort.dir);
   }
-  if (cur.filters.length) p.set("filters", JSON.stringify(cur.filters));
+  // Switched-off filters stay in the view state but never reach the server.
+  const active = cur.filters.filter((f) => !f.off).map(({ c, op, v }) => (v === undefined ? { c, op } : { c, op, v }));
+  if (active.length) p.set("filters", JSON.stringify(active));
+  if (cur.match === "any") p.set("match", "any");
   if (cur.q) p.set("q", cur.q);
   return p;
 }
@@ -207,7 +214,11 @@ function readHash() {
   let filters = [];
   try {
     const f = JSON.parse(p.get("f") || "[]");
-    if (Array.isArray(f)) filters = f.filter((x) => x && typeof x.c === "string" && typeof x.op === "string");
+    if (Array.isArray(f)) {
+      filters = f
+        .filter((x) => x && typeof x.c === "string" && typeof x.op === "string")
+        .map((x) => ({ c: x.c, op: x.op, ...(typeof x.v === "string" ? { v: x.v } : {}), ...(x.off === true ? { off: true } : {}) }));
+    }
   } catch {
     /* ignore a bad hash */
   }
@@ -215,7 +226,7 @@ function readHash() {
   const b = p.get("b");
   const cursor = a ? { dir: "after", value: a } : b ? { dir: "before", value: b } : null;
   return {
-    view: { schema, name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, q: p.get("q") || "", cursor },
+    view: { schema, name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, match: p.get("m") === "any" ? "any" : "all", q: p.get("q") || "", cursor },
     tab: p.get("v") === "details" ? "details" : "data",
     schema,
     name,
@@ -233,6 +244,7 @@ function writeHash(cur, push) {
     p.set("d", cur.sort.dir);
   }
   if (cur.filters.length) p.set("f", JSON.stringify(cur.filters));
+  if (cur.match === "any") p.set("m", "any");
   if (cur.q) p.set("q", cur.q);
   if (cur.cursor) p.set(cur.cursor.dir === "after" ? "a" : "b", cur.cursor.value);
   if (state.tab === "details") p.set("v", "details");
@@ -369,6 +381,7 @@ function freshView(name, filters = [], schema = state.current?.schema ?? state.m
     pageSize: state.current?.pageSize ?? state.meta.pageSizeDefault,
     sort: null,
     filters,
+    match: "all",
     q: "",
     cursor: null,
   };
@@ -385,9 +398,11 @@ async function openTable(cur, { push = false } = {}) {
     state.prefs = loadPrefs(cur.schema, cur.name);
     state.details = null;
     state.selected = null;
-    hideFilterForm();
+    closePanel();
     showNotice("");
     rememberRecent(cur.schema, cur.name);
+  } else if (JSON.stringify([prev.filters, prev.match]) !== JSON.stringify([cur.filters, cur.match])) {
+    syncPanelWithApplied();
   }
   state.selected = null;
   resetCount();
@@ -430,7 +445,7 @@ async function openTable(cur, { push = false } = {}) {
     // and say why, so the user isn't stuck on the home page.
     if (!sameTable && (cur.filters.length || cur.q || cur.sort || cur.cursor)) {
       state.pendingError = `Couldn't apply the saved filters, search or sort (${err.message}), so the table is shown without them.`;
-      openTable({ ...cur, filters: [], q: "", sort: null, cursor: null, page: 1 });
+      openTable({ ...cur, filters: [], match: "all", q: "", sort: null, cursor: null, page: 1 });
       return;
     }
     // Keep the toolbar usable so a bad filter can be removed.
@@ -571,6 +586,7 @@ function renderView() {
   $("export-note").textContent = `Exports what you see: same sort, filters and search, up to ${state.meta.exportMaxRows.toLocaleString()} rows.`;
 
   renderChips();
+  refreshSql();
   renderGrid();
   applyTab();
 }
@@ -640,7 +656,7 @@ function renderGrid() {
     if (d.filtered) {
       td.append(
         "No rows match the current filters and search.",
-        el("button", { type: "button", text: "Clear filters", onclick: () => reload({ filters: [], q: "", page: 1 }) }),
+        el("button", { type: "button", text: "Clear filters", onclick: () => reload({ filters: [], match: "all", q: "", page: 1 }) }),
       );
     } else {
       td.textContent = d.page > 1 ? "No rows on this page." : "This table is empty.";
@@ -824,7 +840,7 @@ function openColMenu(c, anchor) {
   const filt = item("Filter this column…");
   filt.addEventListener("click", () => {
     closeMenus();
-    showFilterForm(-1, { c: col.name, op: defaultOpFor(col.name) });
+    openPanel({ preset: { c: col.name, op: defaultOpFor(col.name) } });
   });
   items.push(filt);
   if (col.nullable) {
@@ -1228,21 +1244,36 @@ function closeMenus() {
 }
 
 // ---- Filters -----------------------------------------------------------
+// Applied filters live in state.current.filters ({c, op, v?, off?}) and the URL hash.
+// The panel edits a draft (state.draft) that only becomes the applied state on Apply.
+
+const MAX_FILTERS = 10;
+
+function filterLabel(f) {
+  const op = OP_LABELS[f.op] ?? f.op;
+  return VALUELESS.has(f.op) ? `${f.c} ${op}` : `${f.c} ${op} ${f.v}`;
+}
 
 function renderChips() {
   const chips = $("chips");
   chips.replaceChildren();
   const cur = state.current;
+  updateFilterButton();
+  chips.hidden = state.panelOpen; // the open panel lists the same conditions
+  if (state.panelOpen) return;
+  if (cur.match === "any" && cur.filters.length > 1) {
+    chips.append(el("span", { class: "chips-mode", title: "Rows matching any one of these filters are shown", text: "any of" }));
+  }
   cur.filters.forEach((f, i) => {
     const op = OP_LABELS[f.op] ?? f.op;
-    const label = VALUELESS.has(f.op) ? `${f.c} ${op}` : `${f.c} ${op} ${f.v}`;
+    const label = filterLabel(f);
     chips.append(
       el(
         "span",
-        { class: "chip" },
+        { class: f.off ? "chip off" : "chip" },
         el(
           "button",
-          { type: "button", class: "chip-text", title: `Edit: ${label}`, onclick: () => showFilterForm(i) },
+          { type: "button", class: "chip-text", title: `${f.off ? "Off. " : ""}Edit: ${label}`, onclick: () => openPanel({ row: i }) },
           el("b", { text: f.c }),
           ` ${op} `,
           VALUELESS.has(f.op) ? null : el("span", { class: "v", text: f.v }),
@@ -1259,27 +1290,41 @@ function renderChips() {
     );
   });
   if (cur.filters.length > 1) {
-    chips.append(el("button", { type: "button", class: "link-btn small", text: "Clear all", onclick: () => reload({ filters: [], page: 1 }) }));
+    chips.append(el("button", { type: "button", class: "link-btn small", text: "Clear all", onclick: () => reload({ filters: [], match: "all", page: 1 }) }));
   }
 }
 
-function showFilterForm(index = -1, preset = null) {
-  const t = state.data.table;
-  state.editingFilter = index;
-  const f = preset ?? (index >= 0 ? state.current.filters[index] : null);
+/** "Filter" plus a badge with the number of filters that are switched on. */
+function updateFilterButton() {
+  const n = state.current ? state.current.filters.filter((f) => !f.off).length : 0;
+  const btn = $("filter-btn");
+  btn.replaceChildren("Filter", n ? el("span", { class: "fp-count", text: String(n) }) : null);
+  btn.classList.toggle("active", n > 0);
+  btn.setAttribute("aria-expanded", String(state.panelOpen));
+  btn.setAttribute("aria-label", n ? `Filter, ${plural(n, "condition")} on` : "Filter");
+}
 
-  const colSel = $("ff-col");
-  colSel.replaceChildren(...t.columns.map((c) => el("option", { value: c.name, text: c.name })));
-  const opSel = $("ff-op");
-  opSel.replaceChildren(...state.meta.filterOps.map((op) => el("option", { value: op, text: OP_LABELS[op] ?? op })));
+function isComplete(row) {
+  return VALUELESS.has(row.op) || row.v !== "";
+}
 
-  colSel.value = f?.c ?? t.columns[0]?.name ?? "";
-  opSel.value = f?.op ?? defaultOpFor(colSel.value);
-  $("ff-val").value = f?.v ?? "";
-  syncValueInput();
-  $("filter-form").querySelector('button[type="submit"]').textContent = index >= 0 ? "Update filter" : "Apply";
-  $("filter-form").hidden = false;
-  (VALUELESS.has(opSel.value) ? opSel : $("ff-val")).focus();
+/** The draft as applied filters, skipping rows that have no value yet. */
+function draftFilters() {
+  return state.draft.rows.filter(isComplete).map((r) => {
+    const f = { c: r.c, op: r.op };
+    if (!VALUELESS.has(r.op)) f.v = r.v;
+    if (!r.on) f.off = true;
+    return f;
+  });
+}
+
+function seedDraft() {
+  const cur = state.current;
+  state.draft = { match: cur.match, rows: cur.filters.map((f) => ({ on: !f.off, c: f.c, op: f.op, v: f.v ?? "" })) };
+}
+
+function newRow(c = state.data.table.columns[0]?.name ?? "", op = defaultOpFor(c)) {
+  return { on: true, c, op, v: "" };
 }
 
 function defaultOpFor(colName) {
@@ -1287,30 +1332,156 @@ function defaultOpFor(colName) {
   return col && (col.category === "S" || col.category === "U") ? "contains" : "eq";
 }
 
-function syncValueInput() {
-  const valueless = VALUELESS.has($("ff-op").value);
-  const input = $("ff-val");
-  input.hidden = valueless;
-  input.required = !valueless;
-  const col = state.data?.table.columns.find((c) => c.name === $("ff-col").value);
+/** Show/hide the value box and set its placeholder for the row's operator and column type. */
+function syncRow(node, row) {
+  const input = node.querySelector('input[type="text"]');
+  input.hidden = VALUELESS.has(row.op);
+  const col = state.data.table.columns.find((c) => c.name === row.c);
   input.placeholder =
     col?.category === "D" ? "e.g. 2026-01-31" : col?.category === "N" ? "a number" : col?.category === "B" ? "true or false" : "value";
+  node.classList.toggle("off", !row.on);
 }
 
-function hideFilterForm() {
-  $("filter-form").hidden = true;
-  state.editingFilter = -1;
+function panelRow(row) {
+  const names = state.data.table.columns.map((c) => c.name);
+  if (!names.includes(row.c)) names.unshift(row.c); // a saved link may name a column that's gone
+  const on = el("input", { type: "checkbox", "aria-label": "Condition on", title: "Turn this condition on or off" });
+  on.checked = row.on;
+  const col = el("select", { "aria-label": "Column" }, ...names.map((n) => el("option", { value: n, text: n })));
+  col.value = row.c;
+  const op = el("select", { "aria-label": "Condition" }, ...state.meta.filterOps.map((o) => el("option", { value: o, text: OP_LABELS[o] ?? o })));
+  op.value = row.op;
+  const val = el("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": "Value" });
+  val.value = row.v;
+  const rm = el("button", { type: "button", class: "icon-btn fp-x", "aria-label": "Remove condition", title: "Remove condition", text: "×" });
+  const node = el("div", { class: "fp-row" }, on, col, op, val, rm);
+
+  on.addEventListener("change", () => {
+    row.on = on.checked;
+    syncRow(node, row);
+  });
+  col.addEventListener("change", () => {
+    row.c = col.value;
+    row.op = defaultOpFor(row.c);
+    op.value = row.op;
+    syncRow(node, row);
+  });
+  op.addEventListener("change", () => {
+    row.op = op.value;
+    syncRow(node, row);
+  });
+  val.addEventListener("input", () => (row.v = val.value));
+  rm.addEventListener("click", () => {
+    state.draft.rows.splice(state.draft.rows.indexOf(row), 1);
+    renderPanel();
+    $("fp-add").focus();
+  });
+  syncRow(node, row);
+  return node;
 }
 
-function submitFilter(e) {
-  e.preventDefault();
-  const f = { c: $("ff-col").value, op: $("ff-op").value };
-  if (!VALUELESS.has(f.op)) f.v = $("ff-val").value;
-  const filters = [...state.current.filters];
-  if (state.editingFilter >= 0) filters[state.editingFilter] = f;
-  else filters.push(f);
-  hideFilterForm();
-  reload({ filters, page: 1 });
+function renderPanel() {
+  const rows = state.draft.rows;
+  $("fp-rows").replaceChildren(
+    ...(rows.length ? rows.map(panelRow) : [el("p", { class: "fp-empty small muted", text: "No conditions. Add one to narrow the rows." })]),
+  );
+  renderPanelFoot();
+}
+
+function renderPanelFoot() {
+  $("fp-add").disabled = state.draft.rows.length >= MAX_FILTERS;
+  $("fp-add").title = state.draft.rows.length >= MAX_FILTERS ? `At most ${MAX_FILTERS} conditions` : "";
+  $("fp-all").setAttribute("aria-pressed", String(state.draft.match === "all"));
+  $("fp-any").setAttribute("aria-pressed", String(state.draft.match === "any"));
+}
+
+function focusRow(i) {
+  const node = $("fp-rows").children[i];
+  if (!node || !node.classList.contains("fp-row")) return;
+  const input = node.querySelector('input[type="text"]');
+  (input.hidden ? node.querySelectorAll("select")[1] : input).focus();
+}
+
+/** Open the panel (optionally focusing row `row`, or adding a pre-filled `preset` row). */
+function openPanel({ row = 0, preset = null } = {}) {
+  if (!state.data) return;
+  closeMenus();
+  if (!state.panelOpen) {
+    state.panelOpen = true;
+    seedDraft();
+  }
+  const rows = state.draft.rows;
+  if (preset && rows.length < MAX_FILTERS) {
+    rows.push(newRow(preset.c, preset.op));
+    row = rows.length - 1;
+  } else if (!rows.length) {
+    rows.push(newRow());
+    row = 0;
+  }
+  $("filter-panel").hidden = false;
+  renderPanel();
+  renderChips();
+  refreshSql();
+  focusRow(row);
+}
+
+function closePanel() {
+  state.panelOpen = false;
+  state.draft = null;
+  $("filter-panel").hidden = true;
+  if (state.current) renderChips();
+}
+
+function togglePanel() {
+  if (state.panelOpen) closePanel();
+  else openPanel();
+}
+
+function applyPanel() {
+  const d = state.draft;
+  const filters = draftFilters();
+  // Drop rows that were left without a value; keep one blank row to type into.
+  const kept = d.rows.filter(isComplete);
+  if (kept.length !== d.rows.length || !kept.length) {
+    d.rows = kept.length ? kept : [newRow()];
+    renderPanel();
+  }
+  reload({ filters, match: d.match, page: 1 });
+}
+
+/** Called when the applied filters changed from outside the panel (chips, menus, Back/Forward). */
+function syncPanelWithApplied() {
+  if (!state.panelOpen) return;
+  const cur = state.current;
+  if (JSON.stringify([draftFilters(), state.draft.match]) === JSON.stringify([cur.filters, cur.match])) return;
+  seedDraft();
+  if (!state.draft.rows.length) state.draft.rows.push(newRow());
+  renderPanel();
+}
+
+function toggleSql() {
+  state.sqlOpen = !state.sqlOpen;
+  $("fp-sql").hidden = !state.sqlOpen;
+  $("fp-sql-btn").setAttribute("aria-pressed", String(state.sqlOpen));
+  refreshSql();
+}
+
+/** Fetch the display-only SELECT for the applied view and show it. */
+async function refreshSql() {
+  if (!state.panelOpen || !state.sqlOpen || !state.current) return;
+  const cur = state.current;
+  const seq = ++state.sqlSeq;
+  const pre = $("fp-sql-text");
+  try {
+    const { sql } = await api(`${tablePath(cur, "/sql")}?${viewQuery(cur, { pageSize: String(cur.pageSize) })}`);
+    if (seq !== state.sqlSeq) return;
+    state.sql = sql;
+    pre.textContent = sql;
+  } catch (err) {
+    if (seq !== state.sqlSeq) return;
+    state.sql = "";
+    pre.textContent = `Couldn't build the SQL: ${err.message}`;
+  }
 }
 
 // ---- Export ------------------------------------------------------------
@@ -1689,13 +1860,32 @@ function wire() {
     }
   });
 
-  $("add-filter").addEventListener("click", () => state.data && showFilterForm(-1));
-  $("filter-form").addEventListener("submit", submitFilter);
-  $("ff-cancel").addEventListener("click", hideFilterForm);
-  $("ff-op").addEventListener("change", syncValueInput);
-  $("ff-col").addEventListener("change", () => {
-    if (state.editingFilter < 0) $("ff-op").value = defaultOpFor($("ff-col").value);
-    syncValueInput();
+  $("filter-btn").addEventListener("click", () => state.data && togglePanel());
+  $("fp-add").addEventListener("click", () => {
+    state.draft.rows.push(newRow());
+    renderPanel();
+    focusRow(state.draft.rows.length - 1);
+  });
+  for (const m of ["all", "any"]) {
+    $(`fp-${m}`).addEventListener("click", () => {
+      state.draft.match = m;
+      renderPanelFoot();
+    });
+  }
+  $("fp-apply").addEventListener("click", applyPanel);
+  $("fp-clear").addEventListener("click", () => {
+    state.draft.rows = [newRow()];
+    state.draft.match = "all";
+    renderPanel();
+    applyPanel();
+  });
+  $("fp-sql-btn").addEventListener("click", toggleSql);
+  $("fp-copy").addEventListener("click", () => state.sql && copyText(state.sql, "Copied SQL"));
+  $("filter-panel").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.matches('input[type="text"]')) {
+      e.preventDefault();
+      applyPanel();
+    }
   });
 
   $("columns-btn").addEventListener("click", (e) => {
@@ -1797,7 +1987,10 @@ function wire() {
     if ($("jump").open || $("help").open) return; // dialogs handle their own keys
     if (e.key === "Escape") {
       if (colMenu || !$("columns-menu").hidden || !$("export-menu").hidden) closeMenus();
-      else if (!$("filter-form").hidden) hideFilterForm();
+      else if (state.panelOpen) {
+        closePanel();
+        $("filter-btn").focus();
+      }
       else if (!$("inspector").hidden) {
         closeInspector();
         $("grid-wrap").focus({ preventScroll: true });
@@ -1812,6 +2005,9 @@ function wire() {
       e.preventDefault();
       $("search").focus();
       $("search").select();
+    } else if (e.key === "f" && state.data && state.tab === "data") {
+      e.preventDefault();
+      togglePanel();
     } else if (e.key === "]" && state.tab === "data") {
       goNext();
     } else if (e.key === "[" && state.tab === "data") {

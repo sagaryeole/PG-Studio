@@ -51,6 +51,21 @@ check "count: exact count" "400" "$(jq -r '.count' <<<"$count")"
 check "details: structure tab" "200" "$(status "${BASE}/api/tables/orders/details")"
 check "export: csv" "200" "$(status "${BASE}/api/tables/authors/export?format=csv")"
 
+or_filters='[{"c":"status","op":"eq","v":"paid"},{"c":"status","op":"eq","v":"refunded"}]'
+or_rows="$(curl -sf -G "${BASE}/api/tables/orders" --data-urlencode "filters=${or_filters}" --data-urlencode "match=any" --data-urlencode "pageSize=50")"
+check "match=any: rows match either condition" "true" "$(jq '[.rows[][2]] | length > 0 and all(. == "paid" or . == "refunded")' <<<"$or_rows")"
+count_of() { curl -sf -G "${BASE}/api/tables/orders/count" "$@" | jq -r '.count'; }
+paid_n="$(count_of --data-urlencode 'filters=[{"c":"status","op":"eq","v":"paid"}]')"
+refunded_n="$(count_of --data-urlencode 'filters=[{"c":"status","op":"eq","v":"refunded"}]')"
+any_n="$(count_of --data-urlencode "filters=${or_filters}" --data-urlencode "match=any")"
+all_n="$(count_of --data-urlencode "filters=${or_filters}")"
+check "match=any: count exceeds each single filter" "true" "$([[ "$any_n" -gt "$paid_n" && "$any_n" -gt "$refunded_n" ]] && echo true || echo false)"
+check "match=all: contradictory filters match nothing" "0" "$all_n"
+check "match=bogus is 400" "400" "$(status -G "${BASE}/api/tables/orders" --data-urlencode "filters=${or_filters}" --data-urlencode "match=bogus")"
+sql_out="$(curl -sf -G "${BASE}/api/tables/orders/sql" --data-urlencode "filters=${or_filters}" --data-urlencode "match=any")"
+check "sql: has WHERE" "true" "$(jq '.sql | contains("WHERE")' <<<"$sql_out")"
+check "sql: inlines literal and OR" "true" "$(jq '.sql | contains("'"'"'refunded'"'"'") and contains(" OR ")' <<<"$sql_out")"
+
 # Security controls
 check "unknown table is 404" "404" "$(status "${BASE}/api/tables/x%22%3B%20DROP%20TABLE%20orders%3B--")"
 check "unknown sort column is 400" "400" "$(status "${BASE}/api/tables/orders?sort=nope")"

@@ -2,6 +2,17 @@
 
 A small local PostgreSQL viewer. It lists tables in one schema and shows their rows in a paged grid, with a side panel that displays full cell values.
 
+What you can do:
+
+- **Sort** by clicking a column header (ascending, descending, off).
+- **Filter** with `+ Filter`: `=`, `≠`, `<`, `≤`, `>`, `≥`, contains, doesn't contain, starts with, ends with, is null, is not null. Filters combine with AND and show as chips; click a chip to edit it.
+- **Search** across the table's text and enum columns.
+- **Follow foreign keys**: the `→` in a foreign-key cell opens the referenced row. The side panel also lists the tables that reference the selected row ("Referenced by"). Composite keys work. Browser Back returns to where you were.
+- **Columns menu**: hide columns, freeze the first visible column, reset. Drag a header's right edge to resize. These settings are remembered per table in this browser.
+- **Export** the current view (sort, filters, search) as CSV or JSON, up to 10,000 rows.
+- **Side panel**: pretty-printed JSON, byte counts for bytea, timestamps in your local time, copy value or whole row as JSON, "Filter by this value".
+- The URL holds the table, page, sort, filters and search, so you can bookmark or share a view.
+
 It is **read-only today**. The code is laid out so that single-cell editing can be added later without touching the read path. See [Edit mode: design for later](#edit-mode-design-for-later).
 
 Stack: Node 20.6+, TypeScript (strict), Express 5, `pg`, plain HTML/CSS/JS front end with no framework and no build step.
@@ -57,7 +68,8 @@ Use a local or dev database while you try it out. Keep production credentials ou
 | `DATABASE_URL` | (required) | Never logged. Error messages are redacted. Use `127.0.0.1`, not `localhost`: `localhost` makes Node try IPv6 (`::1`) first, which fails against some Docker setups. |
 | `PORT` | `4321` | Always bound to `127.0.0.1`. The host is not configurable. |
 | `PG_SCHEMA` | `public` | The one schema to browse. |
-| `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. |
+| `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. Exports use it too. |
+| `EXPORT_MAX_ROWS` | `10000` | Max rows in one CSV/JSON export (max 100,000). |
 
 ### Troubleshooting
 
@@ -80,7 +92,18 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 |---|---|
 | `GET /api/meta` | Schema, connected role and whether it can write, page limits, `capabilities.edit` (false today) |
 | `GET /api/tables` | Tables the role can SELECT, with planner row estimates |
-| `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, PK, generated, `canUpdate`), primary key, one page of rows, `hasNext`, truncated-cell list |
+| `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, category, PK, generated, `canUpdate`), primary key, foreign keys both ways, one page of rows, `hasNext`, truncated-cell list |
+| `GET /api/tables/:name/export?format=csv\|json` | The current view as a download, up to `EXPORT_MAX_ROWS`. Headers `X-Export-Rows`, `X-Export-Limit-Hit` and `X-Export-Cut-Cells` report what was included. |
+
+Both table endpoints take the same view parameters:
+
+| Param | Example | Notes |
+|---|---|---|
+| `sort`, `dir` | `sort=created_at&dir=desc` | Column must exist. NULLs sort last. The primary key is added as a tiebreaker so paging is stable. |
+| `filters` | `[{"c":"status","op":"eq","v":"published"}]` | JSON array, max 10, combined with AND. `op` is one of `eq neq lt lte gt gte contains not_contains starts ends null not_null`. `neq` and `not_contains` include NULL rows. |
+| `q` | `q=dogs` | Case-insensitive search over string and enum columns. |
+
+A filter value that doesn't fit the column type (for example `abc` for an integer) returns 400 with Postgres's message. Comparing or sorting a type that has no such operator (such as `json`) also returns 400.
 
 No endpoint accepts SQL.
 
@@ -93,9 +116,11 @@ What is enforced, and how each item was tested:
 | Control | Implementation | Verified |
 |---|---|---|
 | No SQL injection via table name | The name is used only as a bind parameter in a `pg_class` lookup. The identifiers spliced into SQL come from the catalog row and are quoted with `pg.escapeIdentifier`. | A table named `x"; DROP TABLE users;--` opens normally and `users` is still there |
+| No SQL injection via sort, filters, search | Column names must match a catalog column, and the catalog's name is what gets quoted. Operators come from a fixed list and map to fixed SQL. Every value is a bind parameter. LIKE wildcards in values are escaped. | Unknown column, unknown operator and `' OR '1'='1` values are rejected or harmless. A column named `col"; drop table users;--` sorts and filters correctly. |
+| Spreadsheet formula injection | CSV cells starting with `= + - @` (that aren't plain numbers) are prefixed with `'` | `=HYPERLINK(...)` exports as `'=HYPERLINK(...)`, `-18.5` stays a number |
 | Column-level permissions | Columns the role can't SELECT are left out. Tables it can't SELECT return 404 and aren't listed. | Revoked table returns 404 |
 | Read-only | `BEGIN READ ONLY` + always `ROLLBACK`, **plus** the SELECT-only role | `DELETE` is rejected even as superuser (25006) |
-| Bounded reads | `LIMIT` ≤ 100 (fetches n+1 rows to detect a next page), integer-validated `page`, values cut to 5,000 chars inside Postgres | Bad params return 400. Long values are flagged as cut. |
+| Bounded reads | `LIMIT` ≤ 100 (fetches n+1 rows to detect a next page), integer-validated `page`, values cut to 5,000 chars inside Postgres. Exports: ≤ `EXPORT_MAX_ROWS` rows, 100,000 chars per value. | Bad params return 400. Long values are flagged as cut. A 200k-row export stops at 10,000 and says so. |
 | Timeouts | `statement_timeout` set per transaction | `pg_sleep(2)` is cancelled at 300 ms |
 | Network exposure | Listens on `127.0.0.1` only | |
 | DNS rebinding | `Host` header must be `127.0.0.1:PORT` or `localhost:PORT` | `Host: evil.example` returns 403 |
@@ -107,7 +132,10 @@ What is enforced, and how each item was tested:
 
 - **Deep paging is slow on big tables.** `OFFSET 200000` still scans those rows, and the statement timeout stops runaway cases. Keyset pagination (`WHERE pk > last`) would fix it, so that's the first upgrade to make if you browse large tables.
 - **Tables without a primary key** are ordered by `ctid` (physical order), so pages can shift while the table changes. The UI warns about this.
-- **Row counts are planner estimates** (`reltuples`), shown as `~N`. They are "unknown" until the table has been ANALYZEd. Exact `count(*)` is deliberately not used.
+- **Row counts are planner estimates** (`reltuples`), shown as `~N`. They are "unknown" until the table has been ANALYZEd. Exact `count(*)` is deliberately not used. With filters on, no count is shown.
+- **Filters and sorting on unindexed columns scan the table.** On big tables that can hit the statement timeout, which returns a clear error.
+- **Search only covers text and enum columns.** Use a filter for numbers, dates, UUIDs and JSON.
+- **CSV has no NULL marker.** NULL is written as an empty cell. Use JSON export if the difference matters.
 - **Views, materialized views and other schemas** aren't listed yet.
 - **Every value is shown as Postgres text output.** For example, bytea appears as `\x…` hex and timestamps in the server's timezone.
 
@@ -155,11 +183,12 @@ src/
   server.ts        Express wiring, static files, startup role check
   config.ts        env parsing
   db.ts            pool + withReadOnly (write pool goes here later)
-  catalog.ts       table/column/PK lookups, role privilege check
-  rows.ts          builds the SELECT from catalog metadata
+  catalog.ts       table/column/PK/FK lookups, role privilege check
+  query.ts         sort/filter/search: validation and WHERE/ORDER BY building
+  rows.ts          builds the SELECT; page fetch, export fetch, CSV/JSON output
   security.ts      Host check, CSP headers, same-origin guard for writes
   errors.ts        HttpError + safe Postgres error mapping
-  routes/read.ts   /meta, /tables, /tables/:name
+  routes/read.ts   /meta, /tables, /tables/:name, /tables/:name/export
 public/
   index.html, app.js, styles.css
 ```

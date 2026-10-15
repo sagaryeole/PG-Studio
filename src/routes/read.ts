@@ -5,7 +5,7 @@ import type { Pools, Scope } from "../pools.js";
 import { checkRole, listSchemas, listTables, resolveTable, schemaUsable, type TableMeta } from "../catalog.js";
 import { countRows, fetchDetails } from "../details.js";
 import { FILTER_OPS, parseViewSpec, searchableColumns } from "../query.js";
-import { decodeCursor, fetchExport, fetchRows, toCsv, toJson, type Cursor } from "../rows.js";
+import { buildDisplaySql, decodeCursor, fetchExport, fetchRows, toCsv, toJson, type Cursor } from "../rows.js";
 import { HttpError } from "../errors.js";
 
 const MAX_PAGE = 1_000_000;
@@ -151,6 +151,16 @@ export function readRoutes(config: Config, pools: Pools): Router {
   r.get("/tables/:name/count", async (req, res) => {
     const result = await withTable(req, (c, table) => countRows(c, table, parseViewSpec(req.query, table)));
     res.json(result);
+  });
+
+  // Display only: the SELECT for page 1 of the view. Built from the same validated params, never executed.
+  r.get("/tables/:name/sql", async (req, res) => {
+    const page = parsePositiveInt(req.query["page"], "page", 1, MAX_PAGE);
+    const pageSize = parsePositiveInt(req.query["pageSize"], "pageSize", config.pageSizeDefault, config.pageSizeMax);
+    const sql = await withTable(req, async (_c, table) =>
+      buildDisplaySql(table, parseViewSpec(req.query, table), page, pageSize),
+    );
+    res.json({ sql });
   });
 
   r.get("/tables/:name/export", async (req, res) => {

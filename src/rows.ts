@@ -57,6 +57,26 @@ function buildSelect(
 }
 
 /**
+ * The SELECT for a page of the view, for display only (never executed).
+ * Uses the same WHERE / ORDER BY builders as the real query, but lists `*`
+ * instead of the left(col::text, n) wrappers: those are an app detail and
+ * would make the SQL awkward to paste into psql. Parameters are inlined as
+ * escaped literals. Quoted identifiers and strings are skipped when
+ * substituting, so a column named like "a$1" is left alone.
+ */
+export function buildDisplaySql(table: TableMeta, spec: ViewSpec, page: number, pageSize: number): string {
+  const params: unknown[] = [];
+  const where = buildWhere(table, spec, params);
+  const orderBy = buildOrderBy(table, spec);
+  const text = [`SELECT * FROM ${q(table.schema)}.${q(table.name)}`, where, orderBy].filter(Boolean).join("\n");
+  const inlined = text.replace(/"(?:[^"]|"")*"|'(?:[^']|'')*'|\$(\d+)/g, (m, n?: string) =>
+    n === undefined ? m : pg.escapeLiteral(String(params[Number(n) - 1])),
+  );
+  const offset = (page - 1) * pageSize;
+  return `${inlined}\nLIMIT ${pageSize}${offset > 0 ? ` OFFSET ${offset}` : ""};`;
+}
+
+/**
  * Key expressions for keyset paging, or null when it can't be used.
  * Only the default order qualifies: a custom sort falls back to OFFSET,
  * because the sort column is usually unindexed (so keyset wouldn't help)

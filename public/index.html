@@ -78,7 +78,7 @@
               <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
               <kbd class="search-kbd">/</kbd>
             </div>
-            <button id="add-filter" type="button">+ Filter</button>
+            <button id="filter-btn" type="button" class="filter-btn" aria-expanded="false" aria-controls="filter-panel" title="Filter rows (F)">Filter</button>
             <div id="chips" class="chips" aria-label="Active filters"></div>
             <span class="spacer"></span>
             <div class="menu-wrap">
@@ -95,14 +95,30 @@
             </div>
           </div>
 
-          <form id="filter-form" class="filter-form" hidden>
-            <span class="small muted">Show rows where</span>
-            <select id="ff-col" aria-label="Column"></select>
-            <select id="ff-op" aria-label="Condition"></select>
-            <input id="ff-val" type="text" placeholder="value" autocomplete="off" spellcheck="false" aria-label="Value">
-            <button type="submit" class="primary">Apply</button>
-            <button type="button" id="ff-cancel">Cancel</button>
-          </form>
+          <div id="filter-panel" class="fp" role="group" aria-label="Filter conditions" hidden>
+            <div id="fp-rows" class="fp-rows"></div>
+            <div class="fp-foot">
+              <button id="fp-add" type="button" class="fp-add">+ Add condition</button>
+              <div class="fp-seg" role="group" aria-label="How conditions combine">
+                <span>Match</span>
+                <span class="fp-seg-btns">
+                  <button id="fp-all" type="button" aria-pressed="true" title="Rows must meet every condition (AND)">all</button>
+                  <button id="fp-any" type="button" aria-pressed="false" title="Rows may meet any one condition (OR)">any</button>
+                </span>
+              </div>
+              <span class="spacer"></span>
+              <button id="fp-sql-btn" type="button" class="fp-sql-btn" aria-pressed="false" title="Preview the SQL for the applied view">SQL</button>
+              <button id="fp-clear" type="button" title="Remove all conditions">Clear</button>
+              <button id="fp-apply" type="button" class="primary" title="Apply (Enter)">Apply</button>
+            </div>
+            <div id="fp-sql" class="fp-sql" hidden>
+              <div class="fp-sql-head">
+                <span class="small muted">Read-only preview of the applied view (page 1). PG Studio never runs this text.</span>
+                <button id="fp-copy" type="button" class="small">Copy</button>
+              </div>
+              <pre id="fp-sql-text"></pre>
+            </div>
+          </div>
 
           <p id="warning" class="banner banner-warn small" hidden></p>
           <p id="notice" class="banner banner-info small" hidden></p>
@@ -188,7 +204,8 @@
       <dt><kbd class="mod">⌘</kbd><kbd>K</kbd></dt><dd>Jump to any table or view</dd>
       <dt><kbd>/</kbd></dt><dd>Search the current table</dd>
       <dt><kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd></dt><dd>Move between cells</dd>
-      <dt><kbd>Enter</kbd></dt><dd>Open the selected row</dd>
+      <dt><kbd>F</kbd></dt><dd>Show or hide the filter panel</dd>
+      <dt><kbd>Enter</kbd></dt><dd>Open the selected row, or apply filters</dd>
       <dt><kbd class="mod">⌘</kbd><kbd>C</kbd></dt><dd>Copy the selected cell</dd>
       <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next page</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close panel, menu or dialog</dd>

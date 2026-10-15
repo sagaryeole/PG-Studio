@@ -1,17 +1,23 @@
 # PG Studio
 
-A small local PostgreSQL viewer. It lists tables in one schema and shows their rows in a paged grid, with a side panel that displays full cell values.
+A small local PostgreSQL viewer. It lists the tables, views and materialized views in a schema and shows their rows in a paged grid, with a side panel that displays full cell values.
 
 What you can do:
 
-- **Sort** by clicking a column header (ascending, descending, off).
-- **Filter** with `+ Filter`: `=`, `≠`, `<`, `≤`, `>`, `≥`, contains, doesn't contain, starts with, ends with, is null, is not null. Filters combine with AND and show as chips; click a chip to edit it.
-- **Search** across the table's text and enum columns.
-- **Follow foreign keys**: the `→` in a foreign-key cell opens the referenced row. The side panel also lists the tables that reference the selected row ("Referenced by"). Composite keys work. Browser Back returns to where you were.
-- **Columns menu**: hide columns, freeze the first visible column, reset. Drag a header's right edge to resize. These settings are remembered per table in this browser.
+- **Find a table fast**: press ⌘K (Ctrl K on Windows/Linux) and type part of a name. It searches every schema and lists recently opened tables first. The start page shows recent and largest tables.
+- **Sort and filter from the column header**: click a name to sort, or use its ▾ menu to sort, filter, show only rows with or without a value, or hide the column. `+ Filter` builds any condition: `=`, `≠`, `<`, `≤`, `>`, `≥`, contains, doesn't contain, starts with, ends with, is empty, has a value. Filters combine with AND and show as chips you can click to edit.
+- **Search** across the table's text and enum columns (press `/`).
+- **See the whole row**: click any cell (or move with the arrow keys and press Enter). The side panel shows the full value, then every field of that row, so wide tables are readable without scrolling sideways.
+- **Follow foreign keys**: the ↗ in a foreign-key cell opens the referenced row. The side panel also lists the rows that point to this one. Composite and cross-schema keys work, and browser Back returns to where you were.
+- **Columns menu**: hide columns, keep the first column visible while scrolling, reset. Drag a header's edge to resize. These settings are remembered per table in this browser.
 - **Export** the current view (sort, filters, search) as CSV or JSON, up to 10,000 rows.
-- **Side panel**: pretty-printed JSON, byte counts for bytea, timestamps in your local time, copy value or whole row as JSON, "Filter by this value".
-- The URL holds the table, page, sort, filters and search, so you can bookmark or share a view.
+- **Schemas**: switch schema in the sidebar. Tables and views are listed separately.
+- **Fast paging**: in the default order, pages are fetched by primary key (keyset paging), so page 9,000 is as fast as page 1. With a custom sort it falls back to page numbers. Paging lives under the grid; `[` and `]` also page.
+- **Structure tab**: sizes, row stats, last vacuum/analyze, columns with defaults and comments, indexes with size and usage, constraints, relationships, triggers, and a create script rebuilt from the catalog.
+- **Exact count** on demand, respecting filters and search, bounded by the statement timeout.
+- The URL holds the schema, table, page, sort, filters, search and tab, so you can bookmark or share a view. A bookmark whose filters no longer apply opens the plain table and says why.
+
+Keyboard: ⌘K jump to table, `/` search, arrow keys move between cells, Enter opens the row, ⌘C copies the selected cell, `[` `]` page, Esc closes panels and menus, `?` lists all shortcuts.
 
 It is **read-only today**. The code is laid out so that single-cell editing can be added later without touching the read path. See [Edit mode: design for later](#edit-mode-design-for-later).
 
@@ -67,7 +73,7 @@ Use a local or dev database while you try it out. Keep production credentials ou
 |---|---|---|
 | `DATABASE_URL` | (required) | Never logged. Error messages are redacted. Use `127.0.0.1`, not `localhost`: `localhost` makes Node try IPv6 (`::1`) first, which fails against some Docker setups. |
 | `PORT` | `4321` | Always bound to `127.0.0.1`. The host is not configurable. |
-| `PG_SCHEMA` | `public` | The one schema to browse. |
+| `PG_SCHEMA` | `public` | Schema shown first. Any schema the role has `USAGE` on can be picked in the sidebar. |
 | `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. Exports use it too. |
 | `EXPORT_MAX_ROWS` | `10000` | Max rows in one CSV/JSON export (max 100,000). |
 
@@ -91,17 +97,26 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 | Endpoint | Returns |
 |---|---|
 | `GET /api/meta` | Schema, connected role and whether it can write, page limits, `capabilities.edit` (false today) |
-| `GET /api/tables` | Tables the role can SELECT, with planner row estimates |
+| `GET /api/schemas` | Schemas the role has `USAGE` on (system schemas left out), with relation counts |
+| `GET /api/tables?schema=` | Tables, views and materialized views the role can SELECT, with planner row estimates. 404 for a schema without `USAGE`. |
 | `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, category, PK, generated, `canUpdate`), primary key, foreign keys both ways, one page of rows, `hasNext`, truncated-cell list |
+| `GET /api/tables/:name/details` | Sizes, stats, column defaults and comments, indexes, constraints, triggers, view definition, generated DDL |
+| `GET /api/tables/:name/count` | Exact `count(*)` of the current view (filters and search apply) |
 | `GET /api/tables/:name/export?format=csv\|json` | The current view as a download, up to `EXPORT_MAX_ROWS`. Headers `X-Export-Rows`, `X-Export-Limit-Hit` and `X-Export-Cut-Cells` report what was included. |
 
-Both table endpoints take the same view parameters:
+All `/api/tables/:name…` endpoints take `schema` (default `PG_SCHEMA`) and the same view parameters:
 
 | Param | Example | Notes |
 |---|---|---|
 | `sort`, `dir` | `sort=created_at&dir=desc` | Column must exist. NULLs sort last. The primary key is added as a tiebreaker so paging is stable. |
 | `filters` | `[{"c":"status","op":"eq","v":"published"}]` | JSON array, max 10, combined with AND. `op` is one of `eq neq lt lte gt gte contains not_contains starts ends null not_null`. `neq` and `not_contains` include NULL rows. |
 | `q` | `q=dogs` | Case-insensitive search over string and enum columns. |
+| `after`, `before` | `after=WyIxMDAiXQ` | Keyset cursors (rows endpoint only). Take them from `nextCursor` / `prevCursor` in the previous response. |
+
+**Paging.** The rows response says which mode it used in `paging`:
+
+- `keyset` (default order, table has a primary key, or a table/materialized view without one): pages continue from the last row's key, `WHERE (pk) > (cursor) ORDER BY pk`. Cost doesn't grow with depth. Measured on a 1M-row table: row 900,000 took 6 ms, against 1.2 s with OFFSET, with identical rows. Without a primary key the key is the physical row id (`ctid`); that keeps pages stable but is not faster, because Postgres still sorts the remaining rows.
+- `offset` (custom sort, views, partitioned tables without a primary key): `LIMIT/OFFSET` with `page`. A custom sort is usually on an unindexed column, where keyset paging wouldn't help anyway.
 
 A filter value that doesn't fit the column type (for example `abc` for an integer) returns 400 with Postgres's message. Comparing or sorting a type that has no such operator (such as `json`) also returns 400.
 
@@ -130,13 +145,15 @@ What is enforced, and how each item was tested:
 
 ### Known limitations
 
-- **Deep paging is slow on big tables.** `OFFSET 200000` still scans those rows, and the statement timeout stops runaway cases. Keyset pagination (`WHERE pk > last`) would fix it, so that's the first upgrade to make if you browse large tables.
+- **Deep pages are slow with a custom sort.** Sorting by a column uses OFFSET paging, which reads every earlier row. Default-order paging doesn't have this problem. You can't jump to an arbitrary page number in keyset mode; use filters to narrow down instead.
 - **Tables without a primary key** are ordered by `ctid` (physical order), so pages can shift while the table changes. The UI warns about this.
 - **Row counts are planner estimates** (`reltuples`), shown as `~N`. They are "unknown" until the table has been ANALYZEd. Exact `count(*)` is deliberately not used. With filters on, no count is shown.
 - **Filters and sorting on unindexed columns scan the table.** On big tables that can hit the statement timeout, which returns a clear error.
 - **Search only covers text and enum columns.** Use a filter for numbers, dates, UUIDs and JSON.
 - **CSV has no NULL marker.** NULL is written as an empty cell. Use JSON export if the difference matters.
-- **Views, materialized views and other schemas** aren't listed yet.
+- **Views have no fixed order.** Paging a view without a sort can overlap or skip rows; the UI says so.
+- **The generated DDL is a reading aid**, not a dump: grants, ownership, sequences and partition definitions are left out. Use `pg_dump --schema-only` for a faithful copy.
+- **Foreign tables** (`postgres_fdw` etc.) aren't listed, because browsing them queries the remote server.
 - **Every value is shown as Postgres text output.** For example, bytea appears as `\x…` hex and timestamps in the server's timezone.
 
 ---
@@ -183,12 +200,13 @@ src/
   server.ts        Express wiring, static files, startup role check
   config.ts        env parsing
   db.ts            pool + withReadOnly (write pool goes here later)
-  catalog.ts       table/column/PK/FK lookups, role privilege check
+  catalog.ts       schema/table/column/PK/FK lookups, role privilege check
+  details.ts       Structure tab (sizes, stats, indexes, constraints, triggers, DDL) and exact count
   query.ts         sort/filter/search: validation and WHERE/ORDER BY building
-  rows.ts          builds the SELECT; page fetch, export fetch, CSV/JSON output
+  rows.ts          builds the SELECT; keyset/offset page fetch, export fetch, CSV/JSON output
   security.ts      Host check, CSP headers, same-origin guard for writes
   errors.ts        HttpError + safe Postgres error mapping
-  routes/read.ts   /meta, /tables, /tables/:name, /tables/:name/export
+  routes/read.ts   /meta, /schemas, /tables, /tables/:name (+ /details, /count, /export)
 public/
   index.html, app.js, styles.css
 ```

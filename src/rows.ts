@@ -8,19 +8,35 @@
  * for every type, which is what a future edit endpoint will send back.
  */
 import pg from "pg";
-import type { TableMeta } from "./catalog.js";
+import { hasCtid, type TableMeta } from "./catalog.js";
+import { HttpError } from "./errors.js";
 import { buildOrderBy, buildWhere, isFiltered, type ViewSpec } from "./query.js";
 
 export interface RowPage {
+  /** Page number as the client counts it; only used for display in keyset mode. */
   page: number;
   pageSize: number;
+  /**
+   * "keyset": pages are fetched relative to the last/first row's key (fast at any depth).
+   * "offset": LIMIT/OFFSET (used when a custom sort is active or there is no usable key).
+   */
+  paging: "keyset" | "offset";
   hasNext: boolean;
-  /** Stable order? False when the table has no primary key. */
+  hasPrev: boolean;
+  /** Opaque cursors for keyset paging: pass as ?after= / ?before=. */
+  nextCursor: string | null;
+  prevCursor: string | null;
+  /** Stable order? False when there is no primary key. */
   orderedByPrimaryKey: boolean;
   filtered: boolean;
   rows: (string | null)[][];
   /** [rowIndex, columnIndex] pairs whose value was cut at the char limit. */
   truncated: [number, number][];
+}
+
+export interface Cursor {
+  dir: "after" | "before";
+  values: string[];
 }
 
 const q = pg.escapeIdentifier;
@@ -40,41 +56,125 @@ function buildSelect(
   return `SELECT ${selectList(table, charLimit)} FROM ${q(table.schema)}.${q(table.name)} ${where} ${orderBy}`;
 }
 
+/**
+ * Key expressions for keyset paging, or null when it can't be used.
+ * Only the default order qualifies: a custom sort falls back to OFFSET,
+ * because the sort column is usually unindexed (so keyset wouldn't help)
+ * and NULLs and mixed directions make the cursor condition fragile.
+ */
+export function keysetKeys(table: TableMeta, spec: ViewSpec): string[] | null {
+  if (spec.sort) return null;
+  if (table.primaryKey.length > 0) return table.primaryKey.map(q);
+  if (hasCtid(table.kind)) return ["ctid"];
+  return null;
+}
+
+export function encodeCursor(values: string[]): string {
+  return Buffer.from(JSON.stringify(values), "utf8").toString("base64url");
+}
+
+export function decodeCursor(raw: string): string[] {
+  if (raw.length > 8000) throw new HttpError(400, "Cursor too long");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Invalid cursor");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.length > 32 ||
+    !parsed.every((v) => typeof v === "string" && v.length <= 2000)
+  ) {
+    throw new HttpError(400, "Invalid cursor");
+  }
+  return parsed as string[];
+}
+
 export async function fetchRows(
   client: pg.PoolClient,
   table: TableMeta,
   spec: ViewSpec,
-  page: number,
-  pageSize: number,
+  opts: { page: number; pageSize: number; cursor: Cursor | null },
   cellCharLimit: number,
 ): Promise<RowPage> {
+  const { page, pageSize, cursor } = opts;
   if (!Number.isSafeInteger(page) || page < 1) throw new Error("invalid page");
   if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error("invalid pageSize");
   const charLimit = Math.trunc(cellCharLimit);
   const filtered = isFiltered(spec);
+  const keys = keysetKeys(table, spec);
+  const orderedByPrimaryKey = table.primaryKey.length > 0;
+
+  if (cursor && !keys) throw new HttpError(400, "Cursor paging isn't available for this view");
+  if (cursor && keys && cursor.values.length !== keys.length) throw new HttpError(400, "Invalid cursor");
 
   if (table.columns.length === 0) {
-    return { page, pageSize, hasNext: false, orderedByPrimaryKey: false, filtered, rows: [], truncated: [] };
+    return {
+      page, pageSize, paging: keys ? "keyset" : "offset", hasNext: false, hasPrev: false,
+      nextCursor: null, prevCursor: null, orderedByPrimaryKey, filtered, rows: [], truncated: [],
+    };
   }
 
   const params: unknown[] = [];
-  const base = buildSelect(table, spec, charLimit, params);
-  const limitPh = `$${params.push(pageSize + 1)}`;
-  const offsetPh = `$${params.push((page - 1) * pageSize)}`;
+  const nCols = table.columns.length;
+  let sql: string;
 
-  const res = await client.query({
-    text: `${base} LIMIT ${limitPh} OFFSET ${offsetPh}`,
-    values: params,
-    rowMode: "array",
-  });
+  if (keys) {
+    // Keyset: SELECT data columns + full key values, WHERE (keys) > (cursor), ORDER BY keys.
+    const keyCols = keys.map((k, i) => `${k}::text AS k${i}`).join(", ");
+    let where = buildWhere(table, spec, params);
+    if (cursor) {
+      const phs = cursor.values.map((v) => `$${params.push(v)}`);
+      const cond = `(${keys.join(", ")}) ${cursor.dir === "after" ? ">" : "<"} (${phs.join(", ")})`;
+      where = where ? `${where} AND ${cond}` : `WHERE ${cond}`;
+    }
+    const dir = cursor?.dir === "before" ? "DESC" : "ASC";
+    const orderBy = `ORDER BY ${keys.map((k) => `${k} ${dir}`).join(", ")}`;
+    const limitPh = `$${params.push(pageSize + 1)}`;
+    sql = `SELECT ${selectList(table, charLimit)}, ${keyCols} FROM ${q(table.schema)}.${q(table.name)} ${where} ${orderBy} LIMIT ${limitPh}`;
+  } else {
+    const base = buildSelect(table, spec, charLimit, params);
+    const limitPh = `$${params.push(pageSize + 1)}`;
+    const offsetPh = `$${params.push((page - 1) * pageSize)}`;
+    sql = `${base} LIMIT ${limitPh} OFFSET ${offsetPh}`;
+  }
 
+  const res = await client.query({ text: sql, values: params, rowMode: "array" });
   const raw = res.rows as (string | null)[][];
-  const hasNext = raw.length > pageSize;
-  const pageRows = hasNext ? raw.slice(0, pageSize) : raw;
+  const more = raw.length > pageSize;
+  let pageRows = more ? raw.slice(0, pageSize) : raw;
+
+  // Paging backwards reached the start: show a proper full first page instead.
+  if (cursor?.dir === "before" && !more) {
+    return fetchRows(client, table, spec, { page: 1, pageSize, cursor: null }, cellCharLimit);
+  }
+  if (cursor?.dir === "before") pageRows = pageRows.reverse();
+
+  let hasNext: boolean;
+  let hasPrev: boolean;
+  if (!keys) {
+    hasNext = more;
+    hasPrev = page > 1;
+  } else if (!cursor) {
+    hasNext = more;
+    hasPrev = false;
+  } else if (cursor.dir === "after") {
+    hasNext = more;
+    hasPrev = true;
+  } else {
+    hasNext = true;
+    hasPrev = true;
+  }
+
+  const keyOf = (row: (string | null)[]): string => encodeCursor(row.slice(nCols).map((v) => v ?? ""));
+  const firstRow = pageRows[0];
+  const lastRow = pageRows[pageRows.length - 1];
 
   const truncated: [number, number][] = [];
   const rows = pageRows.map((row, r) =>
-    row.map((v, c) => {
+    row.slice(0, nCols).map((v, c) => {
       if (v !== null && v.length > charLimit) {
         truncated.push([r, c]);
         return v.slice(0, charLimit);
@@ -86,8 +186,12 @@ export async function fetchRows(
   return {
     page,
     pageSize,
+    paging: keys ? "keyset" : "offset",
     hasNext,
-    orderedByPrimaryKey: table.primaryKey.length > 0,
+    hasPrev,
+    nextCursor: keys && lastRow ? keyOf(lastRow) : null,
+    prevCursor: keys && firstRow ? keyOf(firstRow) : null,
+    orderedByPrimaryKey,
     filtered,
     rows,
     truncated,

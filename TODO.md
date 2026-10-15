@@ -13,12 +13,18 @@ Guardrails for every item: the browser never sends SQL, identifiers come from th
 - [x] **Search across a table.** Text columns only, with the statement timeout.
 - [x] **Cell inspector improvements.** Pretty-print JSON, bytea size, timestamps in local timezone, copy row as JSON, filter by value. (Decoding bytea as text/image is still open.)
 
-## Next: scale and structure
+## Done: scale and structure
 
-- [ ] **Keyset paging by primary key.** Makes deep pages on big tables fast (`WHERE pk > last`). Replaces OFFSET, which is the main limitation in the README.
-- [ ] **Views, materialized views, schema switcher.**
-- [ ] **Table details tab.** Indexes, constraints, size, `CREATE TABLE` definition, all read from the catalog.
-- [ ] **Exact row count on demand.** Button that runs `count(*)` with the timeout instead of the planner estimate.
+- [x] **Keyset paging by primary key.** Makes deep pages on big tables fast (`WHERE pk > last`). Replaces OFFSET, which is the main limitation in the README.
+- [x] **Views, materialized views, schema switcher.**
+- [x] **Table details tab.** Indexes, constraints, size, `CREATE TABLE` definition, all read from the catalog.
+- [x] **Exact row count on demand.** Button that runs `count(*)` with the timeout instead of the planner estimate.
+
+## Possible next (small)
+
+- [ ] **Keyset paging for custom sorts on indexed columns.** Needs NULL-aware cursor conditions; only worth it if you page deep into a sorted big table.
+- [ ] **Decode bytea** in the inspector (as UTF-8 text or an image preview).
+- [ ] **Foreign tables**, opt-in, since they query a remote server.
 
 ## Later, only if needed
 
@@ -28,7 +34,8 @@ Guardrails for every item: the browser never sends SQL, identifiers come from th
 
 ## Known limitations (from README)
 
-- Deep paging is slow on big tables (OFFSET).
+- Deep pages are slow with a custom sort (OFFSET); default order uses keyset paging.
+- Keyset paging on tables without a primary key (ctid) is stable but not faster.
 - Tables without a primary key are ordered by `ctid`, so pages can shift while the table changes.
 - Row counts are planner estimates (none shown while filtered).
 - Filters and sorts on unindexed columns scan the table (bounded by the statement timeout).

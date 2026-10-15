@@ -19,16 +19,22 @@ const OP_LABELS = {
   not_null: "is not null",
 };
 const VALUELESS = new Set(["null", "not_null"]);
+const KIND_BADGE = { view: "view", matview: "mat. view", partitioned: "partitioned" };
 
 const state = {
   meta: null,
+  schemas: [],
+  tablesSchema: null, // schema the sidebar list was loaded for
   tables: [],
-  /** { name, page, pageSize, sort: {column, dir} | null, filters: [{c, op, v?}], q } */
+  /** { schema, name, page, pageSize, sort, filters, q, cursor: {dir, value} | null } */
   current: null,
+  tab: "data", // "data" | "details"
   data: null, // last /api/tables/:name response
+  details: null, // { key, data } for the details tab
   selected: null, // { r, c }
   seq: 0, // guards against out-of-order responses
-  editingFilter: -1, // index of the chip being edited, or -1 for a new filter
+  countSeq: 0,
+  editingFilter: -1,
   prefs: null, // column prefs for the current table
 };
 
@@ -79,8 +85,26 @@ function fmtCount(n) {
   return `~${n.toLocaleString()}`;
 }
 
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "—";
+  const units = ["B", "kB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function tablePath(cur, suffix = "") {
+  return `/tables/${encodeURIComponent(cur.name)}${suffix}`;
+}
+
+/** Query string for the current view: schema, sort, filters, search (+ extra). */
 function viewQuery(cur, extra = {}) {
   const p = new URLSearchParams(extra);
+  p.set("schema", cur.schema);
   if (cur.sort) {
     p.set("sort", cur.sort.column);
     p.set("dir", cur.sort.dir);
@@ -96,14 +120,14 @@ function sameView(a, b) {
 
 // ---- Per-table column preferences (browser-local, best effort) ---------
 
-function prefsKey(table) {
-  return `pgstudio:cols:${state.meta?.schema ?? "public"}.${table}`;
+function prefsKey(schema, table) {
+  return `pgstudio:cols:${schema}.${table}`;
 }
 
-function loadPrefs(table) {
+function loadPrefs(schema, table) {
   const empty = { widths: {}, hidden: [], freeze: false };
   try {
-    const raw = localStorage.getItem(prefsKey(table));
+    const raw = localStorage.getItem(prefsKey(schema, table));
     if (!raw) return empty;
     const p = JSON.parse(raw);
     return {
@@ -119,7 +143,7 @@ function loadPrefs(table) {
 function savePrefs() {
   if (!state.current || !state.prefs) return;
   try {
-    localStorage.setItem(prefsKey(state.current.name), JSON.stringify(state.prefs));
+    localStorage.setItem(prefsKey(state.current.schema, state.current.name), JSON.stringify(state.prefs));
   } catch {
     /* storage unavailable: prefs last for this page only */
   }
@@ -130,7 +154,8 @@ function savePrefs() {
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const name = p.get("t");
-  if (!name) return null;
+  const schema = p.get("sc") || state.meta?.schema || "public";
+  if (!name) return { schema, name: null };
   const page = Math.max(1, parseInt(p.get("p") || "1", 10) || 1);
   const size = parseInt(p.get("n") || "", 10);
   const pageSize = [25, 50, 100].includes(size) ? size : state.meta?.pageSizeDefault ?? 50;
@@ -143,24 +168,65 @@ function readHash() {
   } catch {
     /* ignore a bad hash */
   }
-  return { name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, q: p.get("q") || "" };
+  const a = p.get("a");
+  const b = p.get("b");
+  const cursor = a ? { dir: "after", value: a } : b ? { dir: "before", value: b } : null;
+  return {
+    view: {
+      schema,
+      name,
+      page,
+      pageSize,
+      sort: s ? { column: s, dir: d } : null,
+      filters,
+      q: p.get("q") || "",
+      cursor,
+    },
+    tab: p.get("v") === "details" ? "details" : "data",
+    schema,
+    name,
+  };
 }
 
 function writeHash(cur, push) {
-  const p = new URLSearchParams({ t: cur.name, p: String(cur.page), n: String(cur.pageSize) });
+  const p = new URLSearchParams();
+  if (cur.schema !== state.meta.schema) p.set("sc", cur.schema);
+  p.set("t", cur.name);
+  if (cur.page > 1) p.set("p", String(cur.page));
+  if (cur.pageSize !== state.meta.pageSizeDefault) p.set("n", String(cur.pageSize));
   if (cur.sort) {
     p.set("s", cur.sort.column);
     p.set("d", cur.sort.dir);
   }
   if (cur.filters.length) p.set("f", JSON.stringify(cur.filters));
   if (cur.q) p.set("q", cur.q);
+  if (cur.cursor) p.set(cur.cursor.dir === "after" ? "a" : "b", cur.cursor.value);
+  if (state.tab === "details") p.set("v", "details");
   const next = `#${p.toString()}`;
   if (location.hash === next) return;
   if (push) history.pushState(null, "", next);
   else history.replaceState(null, "", next);
 }
 
-// ---- Sidebar -----------------------------------------------------------
+// ---- Schemas and sidebar -----------------------------------------------
+
+function renderSchemaSelect() {
+  const sel = $("schema-select");
+  sel.replaceChildren(
+    ...state.schemas.map((s) => el("option", { value: s.name, text: `${s.name} (${s.relations})` })),
+  );
+  if (state.tablesSchema) sel.value = state.tablesSchema;
+  sel.disabled = state.schemas.length <= 1;
+}
+
+async function loadTables(schema) {
+  const { tables } = await api(`/tables?${new URLSearchParams({ schema })}`);
+  state.tables = tables;
+  state.tablesSchema = schema;
+  $("schema").textContent = schema;
+  $("schema-select").value = schema;
+  renderTables();
+}
 
 function renderTables() {
   const list = $("tables");
@@ -170,28 +236,36 @@ function renderTables() {
   for (const t of shown) {
     const btn = el(
       "button",
-      { type: "button", title: t.name },
-      el("span", { class: "tname", text: t.name }),
+      { type: "button", title: `${t.name}${KIND_BADGE[t.kind] ? ` (${KIND_BADGE[t.kind]})` : ""}` },
+      el(
+        "span",
+        { class: "tname" },
+        t.name,
+        KIND_BADGE[t.kind] ? el("span", { class: `kind kind-${t.kind}`, text: KIND_BADGE[t.kind] }) : null,
+      ),
       el("span", { class: "tcount", text: fmtCount(t.estimatedRows) }),
     );
-    if (state.current && state.current.name === t.name) btn.setAttribute("aria-current", "true");
-    btn.addEventListener("click", () => openTable(freshView(t.name), { push: true }));
+    const cur = state.current;
+    if (cur && cur.name === t.name && cur.schema === state.tablesSchema) btn.setAttribute("aria-current", "true");
+    btn.addEventListener("click", () => openTable(freshView(t.name, [], state.tablesSchema), { push: true }));
     list.append(el("li", {}, btn));
   }
   $("tables-status").textContent =
     state.tables.length === 0
-      ? "No readable tables in this schema."
-      : `${shown.length} of ${state.tables.length} tables`;
+      ? "Nothing readable in this schema."
+      : `${shown.length} of ${state.tables.length} relations`;
 }
 
-function freshView(name, filters = []) {
+function freshView(name, filters = [], schema = state.current?.schema ?? state.meta.schema) {
   return {
+    schema,
     name,
     page: 1,
     pageSize: state.current?.pageSize ?? state.meta.pageSizeDefault,
     sort: null,
     filters,
     q: "",
+    cursor: null,
   };
 }
 
@@ -199,31 +273,47 @@ function freshView(name, filters = []) {
 
 async function openTable(cur, { push = false } = {}) {
   const seq = ++state.seq;
-  const tableChanged = state.current?.name !== cur.name;
+  const prev = state.current;
+  const tableChanged = !prev || prev.name !== cur.name || prev.schema !== cur.schema;
   state.current = cur;
   state.selected = null;
   if (tableChanged) {
-    state.prefs = loadPrefs(cur.name);
+    state.prefs = loadPrefs(cur.schema, cur.name);
+    state.details = null;
     hideFilterForm();
     showNotice("");
   }
+  resetCount();
   closeInspector();
   closeMenus();
   writeHash(cur, push);
-  renderTables();
   showError("");
   setBusy(true);
 
   try {
-    const qs = viewQuery(cur, { page: String(cur.page), pageSize: String(cur.pageSize) });
-    const data = await api(`/tables/${encodeURIComponent(cur.name)}?${qs}`);
+    if (state.tablesSchema !== cur.schema) await loadTables(cur.schema);
+    else renderTables();
+
+    const extra = { page: String(cur.page), pageSize: String(cur.pageSize) };
+    if (cur.cursor) extra[cur.cursor.dir] = cur.cursor.value;
+    const data = await api(`${tablePath(cur)}?${viewQuery(cur, extra)}`);
     if (seq !== state.seq) return; // a newer request superseded this one
+
+    // Keyset paging: without a cursor we're on page 1 whatever the URL said,
+    // and if paging back reached the start the server returned page 1.
+    if (data.paging === "keyset" && !data.hasPrev && cur.page !== 1) {
+      cur.page = 1;
+      cur.cursor = null;
+      data.page = 1;
+      writeHash(cur, false);
+    }
     state.data = data;
     renderView();
+    if (state.tab === "details") loadDetails();
   } catch (err) {
     if (seq !== state.seq) return;
     // Keep the toolbar usable so a bad filter can be removed.
-    if (state.data && state.data.table.name === cur.name) {
+    if (state.data && state.data.table.name === cur.name && state.data.table.schema === cur.schema) {
       renderChips();
       $("search").value = cur.q;
     } else {
@@ -237,16 +327,32 @@ async function openTable(cur, { push = false } = {}) {
   }
 }
 
+/** Re-open the current table with changes. Any change resets the cursor unless one is given. */
 function reload(changes) {
-  openTable({ ...state.current, ...changes });
+  openTable({ ...state.current, cursor: null, ...changes });
 }
 
 function setBusy(busy) {
-  for (const id of ["prev", "next", "page-size"]) $(id).disabled = busy;
+  for (const id of ["first", "prev", "next", "page-size"]) $(id).disabled = busy;
   if (!busy && state.data) {
-    $("prev").disabled = state.data.page <= 1;
+    $("first").disabled = !state.data.hasPrev;
+    $("prev").disabled = !state.data.hasPrev;
     $("next").disabled = !state.data.hasNext;
   }
+}
+
+function goNext() {
+  const d = state.data;
+  if (!d?.hasNext) return;
+  if (d.paging === "keyset") reload({ page: d.page + 1, cursor: { dir: "after", value: d.nextCursor } });
+  else reload({ page: d.page + 1 });
+}
+
+function goPrev() {
+  const d = state.data;
+  if (!d?.hasPrev) return;
+  if (d.paging === "keyset") reload({ page: Math.max(1, d.page - 1), cursor: { dir: "before", value: d.prevCursor } });
+  else reload({ page: d.page - 1 });
 }
 
 // ---- View --------------------------------------------------------------
@@ -256,18 +362,21 @@ function visibleColumns() {
   return state.data.table.columns.map((col, c) => ({ col, c })).filter(({ col }) => !hidden.has(col.name));
 }
 
-/** Map column name -> outgoing FKs that include it (navigable, same schema only). */
+/** Map column name -> outgoing FKs that include it (only those the role can follow). */
 function fkByColumn() {
-  const t = state.data.table;
   const map = new Map();
-  for (const fk of t.foreignKeys) {
-    if (!fk.navigable || fk.toSchema !== state.meta.schema) continue;
+  for (const fk of state.data.table.foreignKeys) {
+    if (!fk.navigable) continue;
     for (const col of fk.fromColumns) {
       if (!map.has(col)) map.set(col, []);
       map.get(col).push(fk);
     }
   }
   return map;
+}
+
+function qualified(schema, name) {
+  return schema === state.current.schema ? name : `${schema}.${name}`;
 }
 
 function renderView() {
@@ -277,29 +386,42 @@ function renderView() {
 
   $("empty").hidden = true;
   $("view").hidden = false;
-  $("title").textContent = t.name;
+  $("title").textContent = cur.schema === state.meta.schema ? t.name : `${t.schema}.${t.name}`;
 
-  const bits = [`${t.columns.length} columns`];
+  const bits = [];
+  if (KIND_BADGE[t.kind]) bits.push(KIND_BADGE[t.kind]);
+  bits.push(`${t.columns.length} columns`);
   if (d.filtered) bits.push("filtered");
   else if (t.estimatedRows !== null) bits.push(`${fmtCount(t.estimatedRows)} rows (estimate)`);
-  bits.push(t.primaryKey.length ? `PK: ${t.primaryKey.join(", ")}` : "no primary key");
+  if (t.primaryKey.length) bits.push(`PK: ${t.primaryKey.join(", ")}`);
+  else if (t.kind !== "view") bits.push("no primary key");
   if (t.foreignKeys.length) bits.push(`${t.foreignKeys.length} FK`);
   if (t.referencedBy.length) bits.push(`referenced by ${t.referencedBy.length}`);
-  if (t.kind === "partitioned") bits.push("partitioned");
   $("subtitle").textContent = bits.join(" · ");
+  $("count-btn").textContent = d.filtered ? "Count matching rows" : "Count rows";
 
   const warn = $("warning");
-  warn.hidden = d.orderedByPrimaryKey;
-  if (!d.orderedByPrimaryKey) {
-    warn.textContent =
+  let warning = "";
+  if (t.kind === "view" && !cur.sort) {
+    warning = "Views have no fixed row order, so pages can overlap or skip rows. Sort by a column for stable paging.";
+  } else if (!d.orderedByPrimaryKey && t.kind !== "view") {
+    warning =
       "No primary key: rows are shown in physical order, so pages can shift if the table changes. " +
       "Rows without a primary key also can't be edited safely.";
   }
+  warn.textContent = warning;
+  warn.hidden = !warning || state.tab !== "data";
 
   const first = (d.page - 1) * d.pageSize + 1;
   $("page").textContent = d.rows.length
     ? `Page ${d.page} · rows ${first.toLocaleString()}–${(first + d.rows.length - 1).toLocaleString()}`
     : `Page ${d.page}`;
+  $("page").title =
+    d.paging === "keyset"
+      ? `Fast paging by ${d.table.primaryKey.length ? "primary key" : "physical row position"}: each page starts after the last row of the previous one.`
+      : cur.sort
+        ? "Page-number paging (custom sort). Deep pages on big tables are slower."
+        : "Page-number paging.";
   $("page-size").value = String(d.pageSize);
 
   const search = $("search");
@@ -314,11 +436,11 @@ function renderView() {
 
   renderChips();
   renderGrid();
+  applyTab();
 }
 
 function renderGrid() {
   const d = state.data;
-  const t = d.table;
   const cur = state.current;
   const cols = visibleColumns();
   const fks = fkByColumn();
@@ -380,7 +502,7 @@ function renderGrid() {
               class: "fk-go",
               role: "button",
               tabindex: "0",
-              title: `Open ${fk.toTable} where ${describeKey(fk.toColumns, fk.fromColumns, row)}`,
+              title: `Open ${qualified(fk.toSchema, fk.toTable)} where ${describeKey(fk.toColumns, fk.fromColumns, row)}`,
               dataset: { fk: fk.name },
               text: "→",
             }),
@@ -433,6 +555,259 @@ function cycleSort(column) {
   else if (s.dir === "asc") next = { column, dir: "desc" };
   else next = null;
   reload({ sort: next, page: 1 });
+}
+
+// ---- Exact count ---------------------------------------------------------
+
+function resetCount() {
+  state.countSeq++;
+  $("count-result").textContent = "";
+  $("count-btn").disabled = false;
+}
+
+async function runCount() {
+  const cur = state.current;
+  const seq = ++state.countSeq;
+  const out = $("count-result");
+  $("count-btn").disabled = true;
+  out.textContent = "counting…";
+  try {
+    const r = await api(`${tablePath(cur, "/count")}?${viewQuery(cur)}`);
+    if (seq !== state.countSeq) return;
+    out.textContent = `${BigInt(r.count).toLocaleString()} ${r.filtered ? "matching rows" : "rows"} (exact)`;
+  } catch (err) {
+    if (seq !== state.countSeq) return;
+    out.textContent = err.message.startsWith("Query timed out")
+      ? "count timed out: the table is too big to count within STATEMENT_TIMEOUT_MS"
+      : `count failed: ${err.message}`;
+  } finally {
+    if (seq === state.countSeq) $("count-btn").disabled = false;
+  }
+}
+
+// ---- Tabs and details ----------------------------------------------------
+
+function setTab(tab) {
+  if (state.tab === tab) return;
+  state.tab = tab;
+  closeInspector();
+  closeMenus();
+  applyTab();
+  if (state.current) writeHash(state.current, false);
+  if (tab === "details") loadDetails();
+}
+
+function applyTab() {
+  const details = state.tab === "details";
+  $("tab-data").setAttribute("aria-selected", String(!details));
+  $("tab-details").setAttribute("aria-selected", String(details));
+  $("data-pane").hidden = details;
+  $("details-pane").hidden = !details;
+  $("pager").hidden = details;
+  $("warning").hidden = details || !$("warning").textContent;
+}
+
+async function loadDetails() {
+  const cur = state.current;
+  const key = `${cur.schema}.${cur.name}`;
+  if (state.details?.key === key) {
+    renderDetails(state.details.data);
+    return;
+  }
+  const pane = $("details-pane");
+  pane.replaceChildren(el("p", { class: "muted", text: "Loading details…" }));
+  try {
+    const data = await api(`${tablePath(cur, "/details")}?${new URLSearchParams({ schema: cur.schema })}`);
+    if (`${state.current.schema}.${state.current.name}` !== key) return;
+    state.details = { key, data };
+    if (state.tab === "details") renderDetails(data);
+  } catch (err) {
+    pane.replaceChildren(el("p", { class: "error", text: `Couldn't load details: ${err.message}` }));
+  }
+}
+
+function section(title, ...children) {
+  return el("section", { class: "d-section" }, el("h2", { text: title }), ...children);
+}
+
+function kv(pairs) {
+  const box = el("div", { class: "kv" });
+  for (const [k, v] of pairs) {
+    if (v === null || v === undefined || v === "") continue;
+    box.append(el("div", { class: "kv-item" }, el("span", { class: "kv-k", text: k }), el("span", { class: "kv-v", text: String(v) })));
+  }
+  return box;
+}
+
+function table(headers, rows) {
+  return el(
+    "div",
+    { class: "d-table-wrap" },
+    el(
+      "table",
+      { class: "d-table" },
+      el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", { text: h })))),
+      el(
+        "tbody",
+        {},
+        ...rows.map((r) =>
+          el("tr", {}, ...r.map((cell) => (cell instanceof Node ? el("td", {}, cell) : el("td", { text: cell ?? "" })))),
+        ),
+      ),
+    ),
+  );
+}
+
+function codeBlock(text, label) {
+  const pre = el("pre", { class: "d-code", text });
+  const btn = el("button", { type: "button", class: "small", text: `Copy ${label}` });
+  btn.addEventListener("click", () => copyText(text, btn, `Copy ${label}`));
+  return el("div", { class: "d-code-wrap" }, btn, pre);
+}
+
+function renderDetails(d) {
+  const pane = $("details-pane");
+  const parts = [];
+
+  if (d.comment) parts.push(el("p", { class: "d-comment", text: d.comment }));
+
+  const overview = [
+    ["Kind", { table: "table", partitioned: "partitioned table", view: "view", matview: "materialized view" }[d.kind]],
+    ["Owner", d.owner],
+  ];
+  if (d.sizes) {
+    overview.push(["Total size", fmtBytes(d.sizes.totalBytes)]);
+    overview.push(["Table", fmtBytes(d.sizes.tableBytes)]);
+    overview.push(["Indexes", fmtBytes(d.sizes.indexBytes)]);
+    if (d.sizes.toastBytes) overview.push(["TOAST (large values)", fmtBytes(d.sizes.toastBytes)]);
+  }
+  if (d.partitionKey) overview.push(["Partition key", d.partitionKey], ["Partitions", d.partitions]);
+  if (d.stats) {
+    overview.push(["Live rows (stats)", d.stats.liveRows?.toLocaleString()]);
+    overview.push(["Dead rows", d.stats.deadRows?.toLocaleString()]);
+    overview.push(["Last vacuum", d.stats.lastVacuum ?? "never"]);
+    overview.push(["Last analyze", d.stats.lastAnalyze ?? "never"]);
+    overview.push(["Sequential scans", d.stats.seqScans?.toLocaleString()]);
+    overview.push(["Index scans", d.stats.indexScans?.toLocaleString()]);
+  }
+  parts.push(section("Overview", kv(overview)));
+
+  parts.push(
+    section(
+      `Columns (${d.columns.length})`,
+      table(
+        ["Name", "Type", "Null", "Default / generated", "Comment"],
+        d.columns.map((c) => [
+          el("span", { class: "mono", text: c.name }),
+          el("span", { class: "mono", text: c.type }),
+          c.nullable ? "yes" : "no",
+          el("span", {
+            class: "mono",
+            text: c.generated
+              ? `GENERATED ${c.generated}`
+              : c.identity
+                ? `IDENTITY (${c.identity})`
+                : c.default ?? "",
+          }),
+          c.comment ?? "",
+        ]),
+      ),
+    ),
+  );
+
+  if (d.indexes.length) {
+    parts.push(
+      section(
+        `Indexes (${d.indexes.length})`,
+        table(
+          ["Name", "Definition", "Size", "Scans"],
+          d.indexes.map((ix) => [
+            el(
+              "span",
+              { class: "mono" },
+              ix.name,
+              ix.primary ? el("span", { class: "tag", text: "primary" }) : ix.unique ? el("span", { class: "tag", text: "unique" }) : null,
+              ix.valid ? null : el("span", { class: "tag warn", text: "invalid" }),
+            ),
+            el("span", { class: "mono", text: ix.definition.replace(/^CREATE (UNIQUE )?INDEX \S+ ON \S+ /, "") }),
+            fmtBytes(ix.sizeBytes),
+            ix.scans === null ? "—" : ix.scans.toLocaleString(),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  if (d.constraints.length) {
+    parts.push(
+      section(
+        `Constraints (${d.constraints.length})`,
+        table(
+          ["Name", "Type", "Definition"],
+          d.constraints.map((c) => [el("span", { class: "mono", text: c.name }), c.type, el("span", { class: "mono", text: c.definition })]),
+        ),
+      ),
+    );
+  }
+
+  const t = state.data?.table;
+  if (t && (t.foreignKeys.length || t.referencedBy.length)) {
+    const rows = [
+      ...t.foreignKeys.map((fk) => ["points to", `${fk.fromColumns.join(", ")} → ${qualified(fk.toSchema, fk.toTable)}(${fk.toColumns.join(", ")})`, fk]),
+      ...t.referencedBy.map((fk) => ["referenced by", `${qualified(fk.fromSchema, fk.fromTable)}(${fk.fromColumns.join(", ")}) → ${fk.toColumns.join(", ")}`, fk]),
+    ];
+    parts.push(
+      section(
+        "Relationships",
+        table(
+          ["Direction", "Columns", ""],
+          rows.map(([dir, text, fk]) => {
+            const target = dir === "points to" ? { schema: fk.toSchema, name: fk.toTable } : { schema: fk.fromSchema, name: fk.fromTable };
+            const open = fk.navigable
+              ? el("button", {
+                  type: "button",
+                  class: "link-btn",
+                  text: `Open ${qualified(target.schema, target.name)} →`,
+                  onclick: () => {
+                    state.tab = "data";
+                    openTable(freshView(target.name, [], target.schema), { push: true });
+                  },
+                })
+              : el("span", { class: "muted", text: "no access" });
+            return [dir, el("span", { class: "mono", text }), open];
+          }),
+        ),
+      ),
+    );
+  }
+
+  if (d.triggers.length) {
+    parts.push(
+      section(
+        `Triggers (${d.triggers.length})`,
+        table(
+          ["Name", "Definition"],
+          d.triggers.map((tg) => [
+            el("span", { class: "mono" }, tg.name, tg.enabled ? null : el("span", { class: "tag warn", text: "disabled" })),
+            el("span", { class: "mono", text: tg.definition }),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  parts.push(
+    section(
+      "DDL",
+      el("p", {
+        class: "muted small",
+        text: "Rebuilt from the catalog. Good for reading and diffing; check it before running it (grants, ownership, sequences and partitions are not included).",
+      }),
+      codeBlock(d.ddl, "DDL"),
+    ),
+  );
+
+  pane.replaceChildren(...parts);
 }
 
 // ---- Column resize -----------------------------------------------------
@@ -492,9 +867,8 @@ function renderColumnsMenu() {
       const h = new Set(state.prefs.hidden);
       if (cb.checked) h.delete(col.name);
       else h.add(col.name);
-      // Keep at least one column visible.
       if (h.size >= t.columns.length) {
-        cb.checked = true;
+        cb.checked = true; // keep at least one column visible
         return;
       }
       state.prefs.hidden = [...h];
@@ -624,8 +998,7 @@ async function doExport(format) {
   showError("");
   showNotice("Preparing export…");
   try {
-    const qs = viewQuery(cur, { format });
-    const res = await fetch(`/api/tables/${encodeURIComponent(cur.name)}/export?${qs}`);
+    const res = await fetch(`/api${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try {
@@ -686,12 +1059,12 @@ function keyFilters(targetCols, sourceCols, row) {
 
 function followOutgoing(fk, row) {
   const filters = keyFilters(fk.toColumns, fk.fromColumns, row);
-  if (filters) openTable(freshView(fk.toTable, filters), { push: true });
+  if (filters) openTable(freshView(fk.toTable, filters, fk.toSchema), { push: true });
 }
 
 function followIncoming(fk, row) {
   const filters = keyFilters(fk.fromColumns, fk.toColumns, row);
-  if (filters) openTable(freshView(fk.fromTable, filters), { push: true });
+  if (filters) openTable(freshView(fk.fromTable, filters, fk.fromSchema), { push: true });
 }
 
 // ---- Inspector ---------------------------------------------------------
@@ -724,7 +1097,6 @@ function openInspector(r, c) {
   $("insp-col").textContent = col.name;
   $("insp-type").textContent = tags.join(" · ");
 
-  // Value, pretty-printed where that helps.
   const notes = [];
   let shown = v === null ? "NULL" : v;
   if (v !== null && !isCut && (col.type === "json" || col.type === "jsonb")) {
@@ -751,7 +1123,6 @@ function openInspector(r, c) {
   $("insp-filter").textContent = v === null ? "Filter: is null" : "Filter by this value";
   $("insp-filter").disabled = isCut;
 
-  // Relationship links
   const links = $("insp-links");
   links.replaceChildren();
   const out = (fkCols.get(col.name) || []).filter((fk) => keyFilters(fk.toColumns, fk.fromColumns, row));
@@ -762,15 +1133,13 @@ function openInspector(r, c) {
         el("button", {
           type: "button",
           class: "link-btn",
-          text: `${fk.toTable} where ${describeKey(fk.toColumns, fk.fromColumns, row)} →`,
+          text: `${qualified(fk.toSchema, fk.toTable)} where ${describeKey(fk.toColumns, fk.fromColumns, row)} →`,
           onclick: () => followOutgoing(fk, row),
         }),
       );
     }
   }
-  const incoming = t.referencedBy.filter(
-    (fk) => fk.navigable && fk.fromSchema === state.meta.schema && keyFilters(fk.fromColumns, fk.toColumns, row),
-  );
+  const incoming = t.referencedBy.filter((fk) => fk.navigable && keyFilters(fk.fromColumns, fk.toColumns, row));
   if (incoming.length) {
     links.append(el("p", { class: "insp-h", text: "Referenced by (this row)" }));
     for (const fk of incoming) {
@@ -778,7 +1147,7 @@ function openInspector(r, c) {
         el("button", {
           type: "button",
           class: "link-btn",
-          text: `${fk.fromTable}.${fk.fromColumns.join(", ")} →`,
+          text: `${qualified(fk.fromSchema, fk.fromTable)}.${fk.fromColumns.join(", ")} →`,
           title: `Open ${fk.fromTable} where ${describeKey(fk.fromColumns, fk.toColumns, row)}`,
           onclick: () => followIncoming(fk, row),
         }),
@@ -810,17 +1179,28 @@ async function copyText(text, btn, label) {
 function wire() {
   $("filter").addEventListener("input", renderTables);
 
-  $("prev").addEventListener("click", () => {
-    if (state.current && state.current.page > 1) reload({ page: state.current.page - 1 });
+  $("schema-select").addEventListener("change", async (e) => {
+    const schema = e.target.value;
+    showError("");
+    try {
+      $("filter").value = "";
+      await loadTables(schema);
+    } catch (err) {
+      showError(err.message);
+    }
   });
-  $("next").addEventListener("click", () => {
-    if (state.current && state.data?.hasNext) reload({ page: state.current.page + 1 });
-  });
+
+  $("first").addEventListener("click", () => state.data?.hasPrev && reload({ page: 1 }));
+  $("prev").addEventListener("click", goPrev);
+  $("next").addEventListener("click", goNext);
   $("page-size").addEventListener("change", (e) => {
     if (state.current) reload({ page: 1, pageSize: parseInt(e.target.value, 10) });
   });
 
-  // Search: apply after a short pause, or immediately on Enter.
+  $("tab-data").addEventListener("click", () => setTab("data"));
+  $("tab-details").addEventListener("click", () => setTab("details"));
+  $("count-btn").addEventListener("click", runCount);
+
   let searchTimer = 0;
   const applySearch = () => {
     clearTimeout(searchTimer);
@@ -913,8 +1293,15 @@ function wire() {
   });
 
   const onNav = () => {
-    const cur = readHash();
-    if (cur && !sameView(cur, state.current)) openTable(cur);
+    const h = readHash();
+    if (!h.name) return;
+    const tabChanged = h.tab !== state.tab;
+    state.tab = h.tab;
+    if (!sameView(h.view, state.current)) openTable(h.view);
+    else if (tabChanged) {
+      applyTab();
+      if (state.tab === "details") loadDetails();
+    }
   };
   window.addEventListener("hashchange", onNav);
   window.addEventListener("popstate", onNav);
@@ -925,7 +1312,6 @@ async function init() {
   wire();
   try {
     state.meta = await api("/meta");
-    $("schema").textContent = state.meta.schema;
     const mode = $("mode");
     mode.textContent = state.meta.capabilities.edit ? "edit enabled" : "read-only";
     if (state.meta.role.canWrite) {
@@ -938,12 +1324,17 @@ async function init() {
       mode.title = `Connected as "${state.meta.role.name}" (SELECT-only). All queries run in READ ONLY transactions.`;
     }
 
-    const { tables } = await api("/tables");
-    state.tables = tables;
-    renderTables();
+    const { schemas } = await api("/schemas");
+    state.schemas = schemas;
+    const h = readHash();
+    const startSchema = schemas.some((s) => s.name === h.schema) ? h.schema : state.meta.schema;
+    await loadTables(startSchema);
+    renderSchemaSelect();
 
-    const fromHash = readHash();
-    if (fromHash && tables.some((t) => t.name === fromHash.name)) openTable(fromHash);
+    if (h.name && state.tables.some((t) => t.name === h.name)) {
+      state.tab = h.tab;
+      openTable({ ...h.view, schema: startSchema });
+    }
   } catch (err) {
     showError(err.message);
   }

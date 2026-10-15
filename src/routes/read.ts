@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type pg from "pg";
 import type { Config } from "../config.js";
-import type { Db } from "../db.js";
+import type { Pools, Scope } from "../pools.js";
 import { checkRole, listSchemas, listTables, resolveTable, schemaUsable, type TableMeta } from "../catalog.js";
 import { countRows, fetchDetails } from "../details.js";
 import { FILTER_OPS, parseViewSpec, searchableColumns } from "../query.js";
@@ -29,10 +29,15 @@ function tableName(req: Request): string {
   return name;
 }
 
-/** ?schema= or the configured default. Only ever used as a bind parameter. */
-function schemaParam(req: Request, config: Config): string {
+/** The schema a connection opens on: its own setting, else PG_SCHEMA. */
+export function preferredSchema(scope: Scope, config: Config): string {
+  return scope.connection.schema ?? config.schema;
+}
+
+/** ?schema= or the scope's default. Only ever used as a bind parameter. */
+function schemaParam(req: Request, fallback: string): string {
   const raw = req.query["schema"];
-  if (raw === undefined || raw === "") return config.schema;
+  if (raw === undefined || raw === "") return fallback;
   if (typeof raw !== "string" || raw.length > MAX_IDENT) throw new HttpError(400, "Invalid schema");
   return raw;
 }
@@ -54,17 +59,18 @@ function safeFileName(table: string, ext: string): string {
   return `${base}-${stamp}.${ext}`;
 }
 
-export function readRoutes(config: Config, db: Db): Router {
+export function readRoutes(config: Config, pools: Pools): Router {
   const r = Router();
 
-  /** Resolve schema + table inside a read-only transaction, or 404. */
+  /** Resolve connection, database, schema + table inside a read-only transaction, or 404. */
   async function withTable<T>(
     req: Request,
     fn: (c: pg.PoolClient, table: TableMeta) => Promise<T>,
   ): Promise<T> {
-    const schema = schemaParam(req, config);
+    const scope = await pools.forRequest(req);
+    const schema = schemaParam(req, preferredSchema(scope, config));
     const name = tableName(req);
-    const result = await db.withReadOnly(async (c) => {
+    const result = await scope.db.withReadOnly(async (c) => {
       const table = await resolveTable(c, schema, name);
       if (!table) return { found: false as const };
       return { found: true as const, value: await fn(c, table) };
@@ -73,10 +79,22 @@ export function readRoutes(config: Config, db: Db): Router {
     return result.value;
   }
 
-  r.get("/meta", async (_req, res) => {
-    const role = await db.withReadOnly((c) => checkRole(c, config.schema));
+  r.get("/meta", async (req, res) => {
+    const scope = await pools.forRequest(req);
+    const preferred = preferredSchema(scope, config);
+    const { schema, role } = await scope.db.withReadOnly(async (c) => {
+      // Another database may not have the configured schema; open the first readable one instead.
+      let s = preferred;
+      if (!(await schemaUsable(c, s))) {
+        const all = await listSchemas(c);
+        s = all.find((x) => x.name === "public")?.name ?? all[0]?.name ?? preferred;
+      }
+      return { schema: s, role: await checkRole(c, s) };
+    });
     res.json({
-      schema: config.schema,
+      connection: scope.connection.id,
+      database: scope.database,
+      schema,
       role: {
         name: role.role,
         canWrite: role.isSuperuser || role.writableTables > 0,
@@ -91,14 +109,16 @@ export function readRoutes(config: Config, db: Db): Router {
     });
   });
 
-  r.get("/schemas", async (_req, res) => {
-    const schemas = await db.withReadOnly((c) => listSchemas(c));
-    res.json({ default: config.schema, schemas });
+  r.get("/schemas", async (req, res) => {
+    const scope = await pools.forRequest(req);
+    const schemas = await scope.db.withReadOnly((c) => listSchemas(c));
+    res.json({ default: preferredSchema(scope, config), schemas });
   });
 
   r.get("/tables", async (req, res) => {
-    const schema = schemaParam(req, config);
-    const result = await db.withReadOnly(async (c) => {
+    const scope = await pools.forRequest(req);
+    const schema = schemaParam(req, preferredSchema(scope, config));
+    const result = await scope.db.withReadOnly(async (c) => {
       if (!(await schemaUsable(c, schema))) return null;
       return listTables(c, schema);
     });

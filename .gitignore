@@ -8,3 +8,6 @@ dist/
 
 # Personal working notes (public plan lives in ROADMAP.md)
 TODO.md
+
+# Saved connections hold credentials (template: connections.example.json)
+connections.json

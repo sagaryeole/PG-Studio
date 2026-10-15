@@ -51,6 +51,16 @@ check "count: exact count" "400" "$(jq -r '.count' <<<"$count")"
 check "details: structure tab" "200" "$(status "${BASE}/api/tables/orders/details")"
 check "export: csv" "200" "$(status "${BASE}/api/tables/authors/export?format=csv")"
 
+# Connections and databases
+check "connections: at least one" "true" "$(curl -sf "${BASE}/api/connections" | jq '.connections | length > 0')"
+check "connections: no credentials sent" "false" "$(curl -sf "${BASE}/api/connections" | jq 'tostring | test("password|postgres://")')"
+check "databases: lists analytics" "true" "$(curl -sf "${BASE}/api/databases" | jq '[.databases[].name] | index("analytics") != null')"
+check "databases: other database's tables" "true" "$(curl -sf "${BASE}/api/tables?db=analytics" | jq '[.tables[].name] | index("page_views") != null')"
+check "databases: meta follows the database" "analytics" "$(curl -sf "${BASE}/api/meta?db=analytics" | jq -r '.database')"
+check "unknown connection is 404" "404" "$(status "${BASE}/api/tables?conn=nope")"
+check "unknown database is 404" "404" "$(status "${BASE}/api/tables?db=nope")"
+check "template database is 404" "404" "$(status "${BASE}/api/tables?db=template1")"
+
 # Security controls
 check "unknown table is 404" "404" "$(status "${BASE}/api/tables/x%22%3B%20DROP%20TABLE%20orders%3B--")"
 check "unknown sort column is 400" "400" "$(status "${BASE}/api/tables/orders?sort=nope")"

@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Local dev",
+    "url": "postgres://pgstudio_ro@127.0.0.1:5432/myapp"
+  },
+  {
+    "name": "Staging (read-only)",
+    "url": "postgres://readonly@staging-db.internal:5432/myapp?sslmode=verify-full",
+    "schema": "public"
+  }
+]

@@ -14,6 +14,29 @@
       <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="3"/><path d="M4 5h8M4 8h8M4 11h8"/></svg>
       PG Studio
     </span>
+    <nav class="scope" aria-label="Connection, database and schema">
+      <div class="menu-wrap">
+        <button id="conn-btn" type="button" class="crumb crumb-conn" aria-haspopup="true" aria-expanded="false">
+          <svg class="crumb-icon" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5" ry="2"/><path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/></svg>
+          <span id="conn-label" class="crumb-text"></span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <div id="conn-menu" class="menu scope-menu" hidden></div>
+      </div>
+      <span class="crumb-sep" aria-hidden="true">/</span>
+      <div class="menu-wrap">
+        <button id="db-btn" type="button" class="crumb" aria-haspopup="true" aria-expanded="false">
+          <span id="db-label" class="crumb-text mono"></span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <div id="db-menu" class="menu scope-menu" hidden></div>
+      </div>
+      <span class="crumb-sep" aria-hidden="true">/</span>
+      <div class="menu-wrap">
+        <button id="schema-btn" type="button" class="crumb" aria-haspopup="true" aria-expanded="false">
+          <span id="schema-label" class="crumb-text mono"></span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <div id="schema-menu" class="menu scope-menu" hidden></div>
+      </div>
+    </nav>
     <button id="jump-btn" type="button" class="jump-btn" aria-haspopup="dialog">
       <span>Jump to table…</span><kbd id="jump-kbd">⌘K</kbd>
     </button>
@@ -24,8 +47,6 @@
 
   <div class="layout">
     <aside class="sidebar" aria-label="Tables">
-      <label class="field-label" for="schema-select">Schema</label>
-      <select id="schema-select"></select>
       <input id="filter" type="search" placeholder="Filter tables" autocomplete="off" spellcheck="false" aria-label="Filter tables">
       <nav id="tables" class="tables"></nav>
       <p id="tables-status" class="muted small"></p>

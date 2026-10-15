@@ -3,13 +3,15 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { loadConfig } from "./config.js";
 import { checkRole } from "./catalog.js";
-import { createDb, redact } from "./db.js";
+import { redact } from "./db.js";
 import { errorHandler } from "./errors.js";
+import { connectionRoutes } from "./routes/connections.js";
 import { readRoutes } from "./routes/read.js";
+import { Pools } from "./pools.js";
 import { hostCheck, requireSameOriginForWrites, securityHeaders } from "./security.js";
 
 const config = loadConfig();
-const db = createDb(config);
+const pools = new Pools(config);
 
 const app = express();
 app.disable("x-powered-by");
@@ -24,7 +26,8 @@ api.use((_req, res, next) => {
   next();
 });
 api.use(requireSameOriginForWrites(config.port));
-api.use(readRoutes(config, db));
+api.use(connectionRoutes(pools));
+api.use(readRoutes(config, pools));
 // Edit seam: mount `writeRoutes(config, writeDb)` here, only when explicitly enabled.
 api.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
@@ -38,26 +41,34 @@ app.use(express.static(path.resolve(here, "..", "public"), { index: "index.html"
 app.use(errorHandler);
 
 const server = app.listen(config.port, config.host, () => {
-  console.log(`PG Studio on http://${config.host}:${config.port}  (schema: ${config.schema}, read-only)`);
-  db.withReadOnly((c) => checkRole(c, config.schema))
-    .then((r) => {
-      if (r.isSuperuser || r.writableTables > 0) {
-        console.warn(
-          `\n  WARNING: role "${r.role}" can modify data` +
-            (r.isSuperuser ? " (superuser)" : ` (${r.writableTables} writable tables)`) +
-            ".\n  READ ONLY transactions are a guard rail, not a boundary." +
-            "\n  Use a SELECT-only role in DATABASE_URL (see README).\n",
-        );
-      } else {
-        console.log(`  Connected as "${r.role}" (no write privileges in ${config.schema}).`);
-      }
-    })
-    .catch((err: unknown) => console.error("[db] startup check failed:", redact(err)));
+  const n = config.connections.length;
+  console.log(
+    `PG Studio on http://${config.host}:${config.port}  (read-only, ${n} connection${n === 1 ? "" : "s"} from ${config.connectionsSource})`,
+  );
+  for (const conn of config.connections) {
+    const schema = conn.schema ?? config.schema;
+    pools
+      .defaultDb(conn)
+      .withReadOnly((c) => checkRole(c, schema))
+      .then((r) => {
+        if (r.isSuperuser || r.writableTables > 0) {
+          console.warn(
+            `\n  WARNING: "${conn.name}": role "${r.role}" can modify data` +
+              (r.isSuperuser ? " (superuser)" : ` (${r.writableTables} writable tables in ${schema})`) +
+              ".\n  READ ONLY transactions are a guard rail, not a boundary." +
+              "\n  Use a SELECT-only role for this connection (see README).\n",
+          );
+        } else {
+          console.log(`  ${conn.name}: connected as "${r.role}" (no write privileges in ${schema}).`);
+        }
+      })
+      .catch((err: unknown) => console.error(`[db] ${conn.name}: startup check failed:`, redact(err)));
+  }
 });
 
 function shutdown(): void {
   server.close(() => {
-    db.close().finally(() => process.exit(0));
+    pools.closeAll().finally(() => process.exit(0));
   });
   setTimeout(() => process.exit(1), 5_000).unref();
 }

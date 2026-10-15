@@ -146,3 +146,51 @@ CREATE ROLE pgstudio_ro LOGIN PASSWORD 'demo_ro';
 GRANT CONNECT ON DATABASE bookshop TO pgstudio_ro;
 GRANT USAGE ON SCHEMA public TO pgstudio_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO pgstudio_ro;
+
+-- A second database on the same server, to try the database switcher.
+-- psql runs this file, so \connect works; everything below lands in "analytics".
+CREATE DATABASE analytics;
+\connect analytics
+
+CREATE SCHEMA reporting;
+
+CREATE TABLE page_views (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  path       text        NOT NULL,
+  referrer   text,
+  country    char(2)     NOT NULL,
+  device     text        NOT NULL,
+  viewed_at  timestamptz NOT NULL
+);
+CREATE INDEX page_views_viewed_at_idx ON page_views(viewed_at);
+
+CREATE TABLE signups (
+  id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email       text        NOT NULL UNIQUE,
+  source      text        NOT NULL,
+  signed_up_at timestamptz NOT NULL
+);
+
+INSERT INTO page_views (path, referrer, country, device, viewed_at)
+SELECT (ARRAY['/', '/books', '/books/' || (1 + g % 3000), '/authors', '/cart', '/checkout'])[1 + (g % 6)],
+       (ARRAY['https://www.google.com/', 'https://news.ycombinator.com/', NULL, 'https://duckduckgo.com/', NULL])[1 + (g % 5)],
+       (ARRAY['US', 'GB', 'DE', 'IN', 'FR', 'CA', 'BR', 'JP'])[1 + (g % 8)],
+       (ARRAY['desktop', 'mobile', 'tablet'])[1 + (g % 3)],
+       timestamptz '2024-01-01' + (g * interval '97 seconds')
+FROM generate_series(1, 60000) g;
+
+INSERT INTO signups (email, source, signed_up_at)
+SELECT 'user' || g || '@example.com',
+       (ARRAY['organic', 'newsletter', 'ads', 'referral'])[1 + (g % 4)],
+       timestamptz '2024-01-01' + (g * interval '53 minutes')
+FROM generate_series(1, 5000) g;
+
+CREATE VIEW reporting.daily_views AS
+SELECT date_trunc('day', viewed_at)::date AS day, count(*) AS views, count(DISTINCT path) AS pages
+FROM public.page_views GROUP BY 1;
+
+ANALYZE;
+
+GRANT CONNECT ON DATABASE analytics TO pgstudio_ro;
+GRANT USAGE ON SCHEMA public, reporting TO pgstudio_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public, reporting TO pgstudio_ro;

@@ -25,6 +25,10 @@ const KIND_LABEL = { view: "view", matview: "materialized view", partitioned: "p
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
 const state = {
+  connections: [], // saved connections (names only; credentials stay on the server)
+  databases: [], // databases on the current connection's server
+  /** { conn, db, defaultDb }: what every API call is scoped to. db null = the connection's own. */
+  scope: null,
   meta: null,
   schemas: [],
   tablesSchema: null, // schema the sidebar list was loaded for
@@ -47,8 +51,18 @@ const state = {
 
 // ---- Utilities ---------------------------------------------------------
 
+/** Add the current connection and database to an API path. */
+function scoped(path) {
+  if (!state.scope) return path;
+  const [p, q = ""] = path.split("?");
+  const params = new URLSearchParams(q);
+  params.set("conn", state.scope.conn);
+  if (state.scope.db) params.set("db", state.scope.db);
+  return `${p}?${params}`;
+}
+
 async function api(path) {
-  const res = await fetch(`/api${path}`, { headers: { Accept: "application/json" } });
+  const res = await fetch(`/api${scoped(path)}`, { headers: { Accept: "application/json" } });
   let body = null;
   try {
     body = await res.json();
@@ -171,8 +185,19 @@ function storageSet(key, value) {
   }
 }
 
+/** True for the first connection's own database: its keys and URLs stay as before. */
+function isDefaultScope() {
+  const s = state.scope;
+  return !s || (s.conn === state.connections[0]?.id && (!s.db || s.db === s.defaultDb));
+}
+
+/** localStorage key, namespaced per connection and database. */
+function skey(name) {
+  return isDefaultScope() ? `pgstudio:${name}` : `pgstudio:${state.scope.conn}/${state.scope.db}:${name}`;
+}
+
 function loadPrefs(schema, table) {
-  const p = storageGet(`pgstudio:cols:${schema}.${table}`, null);
+  const p = storageGet(skey(`cols:${schema}.${table}`), null);
   return {
     widths: p && typeof p.widths === "object" && p.widths ? p.widths : {},
     hidden: Array.isArray(p?.hidden) ? p.hidden : [],
@@ -181,24 +206,26 @@ function loadPrefs(schema, table) {
 }
 
 function savePrefs() {
-  if (state.current && state.prefs) storageSet(`pgstudio:cols:${state.current.schema}.${state.current.name}`, state.prefs);
+  if (state.current && state.prefs) storageSet(skey(`cols:${state.current.schema}.${state.current.name}`), state.prefs);
 }
 
 function rememberRecent(schema, name) {
-  const list = storageGet("pgstudio:recent", []).filter(
+  const list = storageGet(skey("recent"), []).filter(
     (r) => r && typeof r.name === "string" && !(r.schema === schema && r.name === name),
   );
   list.unshift({ schema, name });
-  storageSet("pgstudio:recent", list.slice(0, 6));
+  storageSet(skey("recent"), list.slice(0, 6));
 }
 
 // ---- URL hash state ----------------------------------------------------
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
+  const conn = p.get("c") || state.connections[0]?.id || null;
+  const db = p.get("db") || null;
   const name = p.get("t");
   const schema = p.get("sc") || state.meta?.schema || "public";
-  if (!name) return { schema, name: null };
+  if (!name) return { conn, db, schema, name: null };
   const page = Math.max(1, parseInt(p.get("p") || "1", 10) || 1);
   const size = parseInt(p.get("n") || "", 10);
   const pageSize = [25, 50, 100].includes(size) ? size : state.meta?.pageSizeDefault ?? 50;
@@ -217,13 +244,40 @@ function readHash() {
   return {
     view: { schema, name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, q: p.get("q") || "", cursor },
     tab: p.get("v") === "details" ? "details" : "data",
+    conn,
+    db,
     schema,
     name,
   };
 }
 
-function writeHash(cur, push) {
+/** True when a parsed hash points at a different connection or database than the one loaded. */
+function scopeChanged(h) {
+  const s = state.scope;
+  if (!s) return true;
+  return h.conn !== s.conn || (h.db || s.defaultDb) !== s.db;
+}
+
+/** Hash params for the scope; empty for the default one so old links keep working. */
+function scopeParams() {
   const p = new URLSearchParams();
+  const s = state.scope;
+  if (!s) return p;
+  if (s.conn !== state.connections[0]?.id) p.set("c", s.conn);
+  if (s.db && s.db !== s.defaultDb) p.set("db", s.db);
+  return p;
+}
+
+function writeHomeHash(push) {
+  const p = scopeParams().toString();
+  if (location.hash === (p ? `#${p}` : "")) return;
+  const next = p ? `#${p}` : location.pathname + location.search;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
+
+function writeHash(cur, push) {
+  const p = scopeParams();
   if (cur.schema !== state.meta.schema) p.set("sc", cur.schema);
   p.set("t", cur.name);
   if (cur.page > 1) p.set("p", String(cur.page));
@@ -244,20 +298,210 @@ function writeHash(cur, push) {
 
 // ---- Schemas, sidebar, home --------------------------------------------
 
-function renderSchemaSelect() {
-  const sel = $("schema-select");
-  sel.replaceChildren(
-    ...state.schemas.map((s) => el("option", { value: s.name, text: `${s.name}  (${s.relations})` })),
+// ---- Connection / database / schema switcher ----------------------------
+
+const SCOPE_MENUS = [
+  ["conn-btn", "conn-menu"],
+  ["db-btn", "db-menu"],
+  ["schema-btn", "schema-menu"],
+];
+
+function connLabel(c) {
+  return [c.user, c.host && `${c.host}${c.port ? `:${c.port}` : ""}`].filter(Boolean).join("@");
+}
+
+function renderScope() {
+  const s = state.scope;
+  const conn = state.connections.find((c) => c.id === s?.conn);
+  $("conn-label").textContent = conn?.name ?? "—";
+  $("conn-btn").title = conn ? `Connection: ${conn.name} (${connLabel(conn)})` : "";
+  $("db-label").textContent = s?.db ?? s?.defaultDb ?? "—";
+  $("db-btn").title = "Database";
+  $("schema-label").textContent = state.tablesSchema ?? "—";
+  $("schema-btn").title = "Schema";
+  $("schema-btn").disabled = !state.schemas.length;
+  // Until the connection answers there's no database or schema to show.
+  document.querySelector(".scope").classList.toggle("offline", !state.meta);
+}
+
+/** One popover menu with an optional filter box once it gets long. */
+function renderScopeMenu(menuId, items, current, onPick, footer) {
+  const menu = $(menuId);
+  const list = el("div", { class: "menu-list scope-list", role: "menu" });
+  const paint = (q) => {
+    list.replaceChildren(
+      ...items
+        .filter((it) => !q || it.label.toLowerCase().includes(q))
+        .map((it) =>
+          el(
+            "button",
+            {
+              type: "button",
+              class: "menu-item scope-item",
+              role: "menuitemradio",
+              "aria-checked": String(it.value === current),
+              onclick: () => {
+                closeMenus();
+                if (it.value !== current) onPick(it.value);
+              },
+            },
+            el("span", { class: "scope-check", text: it.value === current ? "✓" : "" }),
+            el("span", { class: "scope-name" }, el("span", { text: it.label }), it.sub ? el("span", { class: "scope-sub", text: it.sub }) : null),
+            el("span", { class: "scope-meta", text: it.meta ?? "" }),
+          ),
+        ),
+    );
+    if (!list.children.length) list.append(el("p", { class: "small muted", text: "No matches" }));
+  };
+  menu.replaceChildren();
+  if (items.length > 8) {
+    const input = el("input", { type: "search", class: "scope-filter", placeholder: "Filter", "aria-label": "Filter", spellcheck: "false" });
+    input.addEventListener("input", () => paint(input.value.trim().toLowerCase()));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") list.querySelector("button")?.click();
+    });
+    menu.append(input);
+    queueMicrotask(() => input.focus());
+  }
+  paint("");
+  menu.append(list);
+  if (footer) menu.append(el("hr"), el("p", { class: "small muted", text: footer }));
+}
+
+function openConnMenu() {
+  renderScopeMenu(
+    "conn-menu",
+    state.connections.map((c) => ({ value: c.id, label: c.name, sub: connLabel(c) })),
+    state.scope?.conn,
+    (id) => enterScope(id, null, null, { push: true }),
+    "Saved connections live in connections.json next to the app.",
   );
-  if (state.tablesSchema) sel.value = state.tablesSchema;
-  sel.disabled = state.schemas.length <= 1;
+}
+
+function openDbMenu() {
+  renderScopeMenu(
+    "db-menu",
+    state.databases.map((d) => ({ value: d.name, label: d.name, meta: d.sizeBytes === null ? "" : fmtBytes(d.sizeBytes) })),
+    state.scope?.db,
+    (name) => enterScope(state.scope.conn, name, null, { push: true }),
+    state.databases.length ? null : "No other databases this role can connect to.",
+  );
+}
+
+function openSchemaMenu() {
+  renderScopeMenu(
+    "schema-menu",
+    state.schemas.map((x) => ({ value: x.name, label: x.name, meta: String(x.relations) })),
+    state.tablesSchema,
+    async (name) => {
+      showError("");
+      try {
+        $("filter").value = "";
+        await loadTables(name);
+      } catch (err) {
+        showError(err.message);
+      }
+    },
+  );
+}
+
+function applyMode() {
+  const mode = $("mode");
+  const m = state.meta;
+  mode.classList.remove("danger");
+  if (!m) {
+    mode.textContent = "Not connected";
+    mode.title = "";
+    return;
+  }
+  mode.textContent = m.capabilities.edit ? "Editing on" : "Read-only";
+  if (m.role.canWrite) {
+    mode.classList.add("danger");
+    mode.textContent = "Read-only app, but this role can write";
+    mode.title =
+      `Connected as "${m.role.name}", which can change data. ` +
+      "The app only reads, but use a SELECT-only role so that doesn't depend on the code being bug-free.";
+  } else {
+    mode.title = `Connected as "${m.role.name}", which can only read. All queries run in read-only transactions.`;
+  }
+}
+
+/** Show the empty state for the loaded scope: no table open. */
+function showHome() {
+  state.current = null;
+  state.data = null;
+  $("view").hidden = true;
+  $("empty").hidden = false;
+  closeInspector();
+  renderTables();
+  renderHome();
+  document.title = "PG Studio";
+}
+
+/**
+ * Switch to a connection and database (db null = the connection's own), load
+ * its schemas and tables, then open `h` (a parsed hash) if given, else go home.
+ */
+async function enterScope(conn, db, h, { push = false } = {}) {
+  const seq = ++state.seq;
+  closeMenus();
+  closeInspector();
+  showError("");
+  showNotice("");
+  const prevDefault = state.scope?.conn === conn ? state.scope.defaultDb : null;
+  state.scope = { conn, db, defaultDb: prevDefault };
+  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], tablesSchema: null, allTables: null, current: null, data: null, details: null });
+  $("view").hidden = true;
+  $("empty").hidden = false;
+  $("empty").replaceChildren();
+  renderScope();
+  renderTables();
+  setBusy(true);
+  try {
+    const [meta, { schemas }, dbs] = await Promise.all([api("/meta"), api("/schemas"), api("/databases")]);
+    if (seq !== state.seq) return;
+    Object.assign(state.scope, { db: meta.database, defaultDb: dbs.default });
+    Object.assign(state, { meta, schemas, databases: dbs.databases });
+    applyMode();
+    const startSchema = h && schemas.some((s) => s.name === h.schema) ? h.schema : meta.schema;
+    await loadTables(startSchema);
+    if (seq !== state.seq) return;
+    renderScope();
+    if (h?.name) {
+      state.tab = h.tab;
+      openTable({ ...h.view, schema: startSchema });
+    } else {
+      showHome();
+      writeHomeHash(push);
+    }
+  } catch (err) {
+    if (seq !== state.seq) return;
+    applyMode();
+    renderScope();
+    $("tables-status").textContent = "";
+    // A bad database in a link: fall back to the connection's own database.
+    if (db && /Database not found/.test(err.message)) {
+      state.pendingError = null;
+      await enterScope(conn, null, null);
+      showError(`There's no database called "${db}" that this role can connect to, so the default one is open.`);
+      return;
+    }
+    const conn_ = state.connections.find((c) => c.id === conn);
+    showError(`Couldn't open ${conn_ ? `"${conn_.name}"` : "the connection"}${db ? ` / ${db}` : ""}: ${err.message}`);
+    $("empty").replaceChildren(
+      el("h1", { text: "Not connected" }),
+      el("p", { class: "muted", text: "Check that the server is running and the connection details are right, or pick another connection above." }),
+    );
+  } finally {
+    if (seq === state.seq) setBusy(false);
+  }
 }
 
 async function loadTables(schema) {
   const { tables } = await api(`/tables?${new URLSearchParams({ schema })}`);
   state.tables = tables;
   state.tablesSchema = schema;
-  $("schema-select").value = schema;
+  renderScope();
   renderTables();
   if (!state.current) renderHome();
 }
@@ -327,7 +571,7 @@ function renderHome() {
       }),
     );
 
-  const recent = storageGet("pgstudio:recent", []).filter((r) => r && typeof r.name === "string");
+  const recent = storageGet(skey("recent"), []).filter((r) => r && typeof r.name === "string");
   const known = new Map(tables.map((t) => [t.name, t]));
   const recentHere = recent
     .map((r) => (r.schema === schema ? known.get(r.name) && { t: known.get(r.name), s: r.schema } : { t: { name: r.name, kind: "table", estimatedRows: null }, s: r.schema }))
@@ -1216,6 +1460,7 @@ function closeMenus() {
   for (const [b, m] of [
     ["columns-btn", "columns-menu"],
     ["export-btn", "export-menu"],
+    ...SCOPE_MENUS,
   ]) {
     $(m).hidden = true;
     $(b).setAttribute("aria-expanded", "false");
@@ -1321,7 +1566,7 @@ async function doExport(format) {
   showError("");
   showNotice("Preparing the download…");
   try {
-    const res = await fetch(`/api${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`);
+    const res = await fetch(`/api${scoped(`${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`)}`);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try {
@@ -1564,7 +1809,7 @@ function renderJump() {
   const here = state.current?.schema ?? state.tablesSchema;
   let items;
   if (!q) {
-    const recent = storageGet("pgstudio:recent", []);
+    const recent = storageGet(skey("recent"), []);
     const rank = (t) => {
       const ri = recent.findIndex((r) => r.schema === t.schema && r.name === t.name);
       return ri >= 0 ? ri : 100 + (t.schema === here ? 0 : 1000);
@@ -1648,15 +1893,14 @@ function wire() {
   document.querySelectorAll("kbd.mod").forEach((k) => (k.textContent = MOD));
 
   $("filter").addEventListener("input", renderTables);
-  $("schema-select").addEventListener("change", async (e) => {
-    showError("");
-    try {
-      $("filter").value = "";
-      await loadTables(e.target.value);
-    } catch (err) {
-      showError(err.message);
-    }
-  });
+  const scopeMenus = { "conn-btn": ["conn-menu", openConnMenu], "db-btn": ["db-menu", openDbMenu], "schema-btn": ["schema-menu", openSchemaMenu] };
+  for (const [btn, [menu, onOpen]] of Object.entries(scopeMenus)) {
+    $(btn).addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(btn, menu, onOpen);
+    });
+    $(menu).addEventListener("click", (e) => e.stopPropagation());
+  }
   $("error-close").addEventListener("click", () => showError(""));
 
   $("first").addEventListener("click", () => state.data?.hasPrev && reload({ page: 1 }));
@@ -1796,7 +2040,7 @@ function wire() {
     }
     if ($("jump").open || $("help").open) return; // dialogs handle their own keys
     if (e.key === "Escape") {
-      if (colMenu || !$("columns-menu").hidden || !$("export-menu").hidden) closeMenus();
+      if (colMenu || [...SCOPE_MENUS, ["", "columns-menu"], ["", "export-menu"]].some(([, m]) => !$(m).hidden)) closeMenus();
       else if (!$("filter-form").hidden) hideFilterForm();
       else if (!$("inspector").hidden) {
         closeInspector();
@@ -1821,17 +2065,16 @@ function wire() {
 
   const onNav = () => {
     const h = readHash();
+    if (!state.connections.some((c) => c.id === h.conn)) {
+      showError(`There's no saved connection called "${h.conn}".`);
+      return;
+    }
+    if (scopeChanged(h)) {
+      enterScope(h.conn, h.db, h);
+      return;
+    }
     if (!h.name) {
-      if (state.current) {
-        state.current = null;
-        state.data = null;
-        $("view").hidden = true;
-        $("empty").hidden = false;
-        closeInspector();
-        renderTables();
-        renderHome();
-        document.title = "PG Studio";
-      }
+      if (state.current) showHome();
       return;
     }
     const tabChanged = h.tab !== state.tab;
@@ -1853,31 +2096,17 @@ function wire() {
 async function init() {
   wire();
   try {
-    state.meta = await api("/meta");
-    const mode = $("mode");
-    mode.textContent = state.meta.capabilities.edit ? "Editing on" : "Read-only";
-    if (state.meta.role.canWrite) {
-      mode.classList.add("danger");
-      mode.textContent = "Read-only app, but this role can write";
-      mode.title =
-        `Connected as "${state.meta.role.name}", which can change data. ` +
-        "The app only reads, but use a SELECT-only role so that doesn't depend on the code being bug-free.";
-    } else {
-      mode.title = `Connected as "${state.meta.role.name}", which can only read. All queries run in read-only transactions.`;
+    const { connections } = await api("/connections");
+    state.connections = connections;
+    let h = readHash();
+    if (!connections.some((c) => c.id === h.conn)) {
+      state.pendingError = `There's no saved connection called "${h.conn}".`;
+      h = { ...h, conn: connections[0].id, db: null, name: null };
     }
-
-    const { schemas } = await api("/schemas");
-    state.schemas = schemas;
-    const h = readHash();
-    const startSchema = schemas.some((s) => s.name === h.schema) ? h.schema : state.meta.schema;
-    await loadTables(startSchema);
-    renderSchemaSelect();
-
-    if (h.name && state.tables.some((t) => t.name === h.name)) {
-      state.tab = h.tab;
-      openTable({ ...h.view, schema: startSchema });
-    } else {
-      renderHome();
+    await enterScope(h.conn, h.db, h.name ? h : null);
+    if (state.pendingError && !h.name) {
+      showError(state.pendingError);
+      state.pendingError = null;
     }
   } catch (err) {
     showError(err.message);

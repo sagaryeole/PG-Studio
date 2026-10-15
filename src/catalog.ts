@@ -5,9 +5,11 @@
  */
 import type pg from "pg";
 
+export type RelKind = "table" | "partitioned" | "view" | "matview";
+
 export interface TableSummary {
   name: string;
-  kind: "table" | "partitioned";
+  kind: RelKind;
   /** Planner estimate; null when the table has never been analyzed. */
   estimatedRows: number | null;
 }
@@ -51,7 +53,7 @@ export interface TableMeta {
   oid: string;
   schema: string;
   name: string;
-  kind: "table" | "partitioned";
+  kind: RelKind;
   estimatedRows: number | null;
   columns: ColumnMeta[];
   /** Primary-key column names in key order. Empty if the table has no PK. */
@@ -98,12 +100,29 @@ export async function checkRole(client: pg.PoolClient, schema: string): Promise<
   };
 }
 
-function kindOf(relkind: string): "table" | "partitioned" {
-  return relkind === "p" ? "partitioned" : "table";
+/** Relation kinds the viewer can browse: tables, partitioned tables, views, materialized views. */
+const BROWSABLE = "('r', 'p', 'v', 'm')";
+
+function kindOf(relkind: string): RelKind {
+  switch (relkind) {
+    case "p":
+      return "partitioned";
+    case "v":
+      return "view";
+    case "m":
+      return "matview";
+    default:
+      return "table";
+  }
 }
 
-function estimate(reltuples: string | number | null): number | null {
-  if (reltuples === null) return null;
+/** Tables and materialized views have a physical row id (ctid); views and partitioned parents don't. */
+export function hasCtid(kind: RelKind): boolean {
+  return kind === "table" || kind === "matview";
+}
+
+function estimate(reltuples: string | number | null, relkind?: string): number | null {
+  if (reltuples === null || relkind === "v") return null;
   const n = Number(reltuples);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
 }
@@ -115,7 +134,7 @@ const TABLES_SQL = `
     FROM pg_catalog.pg_class c
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = $1
-     AND c.relkind IN ('r', 'p')
+     AND c.relkind IN ${BROWSABLE}
      AND NOT c.relispartition
      AND has_table_privilege(c.oid, 'SELECT')
    ORDER BY c.relname`;
@@ -128,7 +147,7 @@ export async function listTables(client: pg.PoolClient, schema: string): Promise
   return res.rows.map((r) => ({
     name: r.name,
     kind: kindOf(r.relkind),
-    estimatedRows: estimate(r.reltuples),
+    estimatedRows: estimate(r.reltuples, r.relkind),
   }));
 }
 
@@ -142,7 +161,7 @@ const RESOLVE_SQL = `
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = $1
      AND c.relname = $2
-     AND c.relkind IN ('r', 'p')
+     AND c.relkind IN ${BROWSABLE}
      AND NOT c.relispartition
      AND has_table_privilege(c.oid, 'SELECT')`;
 
@@ -272,7 +291,7 @@ export async function resolveTable(
     schema: t.schema,
     name: t.name,
     kind: kindOf(t.relkind),
-    estimatedRows: estimate(t.reltuples),
+    estimatedRows: estimate(t.reltuples, t.relkind),
     primaryKey,
     foreignKeys,
     referencedBy,
@@ -288,4 +307,40 @@ export async function resolveTable(
       category: c.category,
     })),
   };
+}
+
+export interface SchemaSummary {
+  name: string;
+  /** Browsable relations the role can SELECT in this schema. */
+  relations: number;
+}
+
+const SCHEMAS_SQL = `
+  SELECT n.nspname::text AS name,
+         (SELECT count(*)::int
+            FROM pg_catalog.pg_class c
+           WHERE c.relnamespace = n.oid
+             AND c.relkind IN ${BROWSABLE}
+             AND NOT c.relispartition
+             AND has_table_privilege(c.oid, 'SELECT')) AS relations
+    FROM pg_catalog.pg_namespace n
+   WHERE has_schema_privilege(n.oid, 'USAGE')
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname NOT LIKE 'pg\\_toast%'
+     AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+   ORDER BY n.nspname`;
+
+/** Schemas the role can use. System schemas are left out. */
+export async function listSchemas(client: pg.PoolClient): Promise<SchemaSummary[]> {
+  const res = await client.query<SchemaSummary>(SCHEMAS_SQL);
+  return res.rows;
+}
+
+/** True when `schema` exists and the role has USAGE on it. */
+export async function schemaUsable(client: pg.PoolClient, schema: string): Promise<boolean> {
+  const res = await client.query(
+    "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1 AND has_schema_privilege(oid, 'USAGE')",
+    [schema],
+  );
+  return (res.rowCount ?? 0) > 0;
 }

@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in PG Studio doesn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Please don't paste connection strings, passwords or real row data.**
+        For security problems, use [private vulnerability reporting](https://github.com/sagaryeole/PG-Studio/security/advisories/new) instead of an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If you can, reproduce it against the demo database (`npm run demo:db`, then `npm run demo`) or a minimal `CREATE TABLE`.
+      placeholder: |
+        1. Open table `orders`
+        2. Add filter `status = delivered`
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server output or UI error
+      description: The `[db]` / `[http]` lines from the terminal, or the error banner text. Connection strings are redacted by the server, but double-check.
+      render: text
+  - type: input
+    id: pg
+    attributes:
+      label: PostgreSQL version
+      placeholder: "16.4 (Docker postgres:16-alpine)"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "22.11.0"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: "Chrome 130 on macOS 15"

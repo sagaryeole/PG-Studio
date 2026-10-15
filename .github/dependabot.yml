@@ -7,6 +7,11 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # Types track the oldest supported Node (engines: >=20.6), so typecheck
+      # flags APIs that Node 20 doesn't have. Bump together with "engines".
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

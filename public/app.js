@@ -34,6 +34,9 @@ const state = {
   tablesSchema: null, // schema the sidebar list was loaded for
   tables: [],
   allTables: null, // every relation in every schema, for the jump dialog
+  routines: [], // functions, procedures and aggregates of tablesSchema (best effort)
+  allRoutines: null, // same, across schemas, for the jump dialog
+  routine: null, // { oid, schema, detail } while a routine is open
   /** { schema, name, page, pageSize, sort, filters, q, cursor: {dir, value} | null } */
   current: null,
   tab: "data", // "data" | "details"
@@ -225,7 +228,8 @@ function readHash() {
   const db = p.get("db") || null;
   const name = p.get("t");
   const schema = p.get("sc") || state.meta?.schema || "public";
-  if (!name) return { conn, db, schema, name: null };
+  const fn = /^\d{1,10}$/.test(p.get("fn") || "") ? p.get("fn") : null;
+  if (!name) return { conn, db, schema, name: null, fn };
   const page = Math.max(1, parseInt(p.get("p") || "1", 10) || 1);
   const size = parseInt(p.get("n") || "", 10);
   const pageSize = [25, 50, 100].includes(size) ? size : state.meta?.pageSizeDefault ?? 50;
@@ -278,7 +282,7 @@ function writeHomeHash(push) {
 
 function writeHash(cur, push) {
   const p = scopeParams();
-  if (cur.schema !== state.meta.schema) p.set("sc", cur.schema);
+  if (cur.schema !== state.meta?.schema) p.set("sc", cur.schema);
   p.set("t", cur.name);
   if (cur.page > 1) p.set("p", String(cur.page));
   if (cur.pageSize !== state.meta.pageSizeDefault) p.set("n", String(cur.pageSize));
@@ -296,7 +300,16 @@ function writeHash(cur, push) {
   else history.replaceState(null, "", next);
 }
 
-// ---- Schemas, sidebar, home --------------------------------------------
+/** Routine views are addressed by oid: #fn=<oid>, plus sc=<schema> when not the default. */
+function writeRoutineHash(schema, oid, push) {
+  const p = scopeParams();
+  if (schema !== state.meta?.schema) p.set("sc", schema);
+  p.set("fn", oid);
+  const next = `#${p.toString()}`;
+  if (location.hash === next) return;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
 
 // ---- Connection / database / schema switcher ----------------------------
 
@@ -430,7 +443,9 @@ function applyMode() {
 function showHome() {
   state.current = null;
   state.data = null;
+  state.routine = null;
   $("view").hidden = true;
+  $("routine").hidden = true;
   $("empty").hidden = false;
   closeInspector();
   renderTables();
@@ -450,8 +465,9 @@ async function enterScope(conn, db, h, { push = false } = {}) {
   showNotice("");
   const prevDefault = state.scope?.conn === conn ? state.scope.defaultDb : null;
   state.scope = { conn, db, defaultDb: prevDefault };
-  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], tablesSchema: null, allTables: null, current: null, data: null, details: null });
+  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], tablesSchema: null, allTables: null, current: null, data: null, details: null, routine: null });
   $("view").hidden = true;
+  $("routine").hidden = true;
   $("empty").hidden = false;
   $("empty").replaceChildren();
   renderScope();
@@ -467,7 +483,9 @@ async function enterScope(conn, db, h, { push = false } = {}) {
     await loadTables(startSchema);
     if (seq !== state.seq) return;
     renderScope();
-    if (h?.name) {
+    if (h?.fn && !h.name) {
+      openRoutine(h.fn, startSchema);
+    } else if (h?.name) {
       state.tab = h.tab;
       openTable({ ...h.view, schema: startSchema });
     } else {
@@ -498,12 +516,20 @@ async function enterScope(conn, db, h, { push = false } = {}) {
 }
 
 async function loadTables(schema) {
+  // Routines load in parallel and never block (or break) the table list.
+  const routinesReq = api(`/routines?${new URLSearchParams({ schema })}`).then((r) => r.routines, () => []);
   const { tables } = await api(`/tables?${new URLSearchParams({ schema })}`);
   state.tables = tables;
+  state.routines = [];
   state.tablesSchema = schema;
   renderScope();
   renderTables();
   if (!state.current) renderHome();
+  routinesReq.then((routines) => {
+    if (state.tablesSchema !== schema) return;
+    state.routines = routines;
+    renderTables();
+  });
 }
 
 function renderTables() {
@@ -537,12 +563,48 @@ function renderTables() {
     }
     nav.append(el("h3", { text: `${label} (${items.length})` }), ul);
   }
+  const routinesShown = renderRoutineGroups(nav, filter);
   $("tables-status").textContent =
-    state.tables.length === 0
+    state.tables.length === 0 && state.routines.length === 0
       ? "Nothing readable in this schema. Check the role's grants."
-      : filter && shown.length === 0
+      : filter && shown.length === 0 && routinesShown === 0
         ? `Nothing matches "${$("filter").value.trim()}".`
         : "";
+}
+
+/** "2 args" style hint that tells overloads of one name apart. */
+function argHint(args) {
+  const n = args.trim() ? args.split(",").length : 0;
+  return n === 0 ? "no args" : plural(n, "arg");
+}
+
+/** Functions and Procedures groups for the sidebar. Returns how many items match the filter. */
+function renderRoutineGroups(nav, filter) {
+  const shown = state.routines.filter((r) => r.name.toLowerCase().includes(filter));
+  const overloaded = new Map();
+  for (const r of state.routines) overloaded.set(r.name, (overloaded.get(r.name) ?? 0) + 1);
+  const groups = [
+    ["Functions", shown.filter((r) => r.kind !== "procedure")],
+    ["Procedures", shown.filter((r) => r.kind === "procedure")],
+  ];
+  for (const [label, items] of groups) {
+    if (!items.length) continue;
+    const ul = el("ul");
+    for (const r of items) {
+      const tag = { aggregate: "agg.", window: "win." }[r.kind];
+      const btn = el(
+        "button",
+        { type: "button", title: `${r.name}(${r.args})` },
+        el("span", { class: "tname" }, r.name, tag ? el("span", { class: "kind", text: tag }) : null),
+        el("span", { class: "tcount", text: overloaded.get(r.name) > 1 ? argHint(r.args) : "" }),
+      );
+      if (state.routine?.oid === r.oid) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", () => openRoutine(r.oid, state.tablesSchema, { push: true }));
+      ul.append(el("li", {}, btn));
+    }
+    nav.append(el("h3", { text: `${label} (${items.length})` }), ul);
+  }
+  return shown.length;
 }
 
 function renderHome() {
@@ -625,6 +687,7 @@ async function openTable(cur, { push = false } = {}) {
   const prev = state.current;
   const tableChanged = !prev || prev.name !== cur.name || prev.schema !== cur.schema;
   state.current = cur;
+  state.routine = null; // the routine section is hidden once the table renders
   if (tableChanged) {
     state.prefs = loadPrefs(cur.schema, cur.name);
     state.details = null;
@@ -684,6 +747,7 @@ async function openTable(cur, { push = false } = {}) {
     } else {
       state.data = null;
       $("view").hidden = true;
+      $("routine").hidden = true;
       $("empty").hidden = false;
       renderHome();
     }
@@ -760,6 +824,7 @@ function renderView() {
   const cur = state.current;
 
   $("empty").hidden = true;
+  $("routine").hidden = true;
   $("view").hidden = false;
   const h1 = $("title");
   h1.replaceChildren();
@@ -1335,10 +1400,13 @@ function renderDetails(d) {
         "Triggers",
         d.triggers.length,
         dtable(
-          ["Name", "Definition"],
+          ["Name", "Definition", ""],
           d.triggers.map((tg) => [
             el("span", { class: "mono" }, tg.name, tg.enabled ? null : el("span", { class: "tag warn", text: "disabled" })),
             el("span", { class: "mono", text: tg.definition }),
+            tg.functionOid
+              ? el("button", { type: "button", class: "link-btn", text: "View function", onclick: () => openRoutine(tg.functionOid, d.schema, { push: true }) })
+              : "",
           ]),
         ),
       ),
@@ -1358,6 +1426,125 @@ function renderDetails(d) {
   );
 
   pane.replaceChildren(...parts);
+}
+
+// ---- Routines (functions, procedures, aggregates; view only) ---------------
+
+async function openRoutine(oid, schema, { push = false } = {}) {
+  const seq = ++state.seq; // supersedes any table load still in flight
+  state.current = null;
+  state.data = null;
+  state.routine = { oid, schema, detail: null };
+  setBusy(false);
+  closeInspector();
+  closeMenus();
+  showError("");
+  showNotice("");
+  writeRoutineHash(schema, oid, push);
+  $("empty").hidden = true;
+  $("view").hidden = true;
+  $("routine").hidden = false;
+  $("routine-title").replaceChildren();
+  $("routine-facts").replaceChildren();
+  $("routine-body").replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+
+  try {
+    if (state.tablesSchema !== schema) await loadTables(schema);
+    else renderTables();
+    const detail = await api(`/routines/${encodeURIComponent(oid)}`);
+    if (seq !== state.seq) return;
+    state.routine.detail = detail;
+    if (detail.schema !== state.tablesSchema) {
+      // The link didn't say which schema this routine lives in (e.g. a trigger function).
+      await loadTables(detail.schema);
+      if (seq !== state.seq) return;
+    }
+    state.routine.schema = detail.schema;
+    writeRoutineHash(detail.schema, oid, false);
+    renderRoutine(detail);
+    renderTables();
+  } catch (err) {
+    if (seq !== state.seq) return;
+    state.routine = null;
+    $("routine").hidden = true;
+    $("empty").hidden = false;
+    renderHome();
+    renderTables();
+    showError(
+      err.message === "Function not found"
+        ? "There's no function or procedure with that id that this role can read."
+        : err.message,
+    );
+  }
+}
+
+function renderRoutine(d) {
+  const h1 = $("routine-title");
+  h1.replaceChildren();
+  if (d.schema !== state.meta.schema) h1.append(el("span", { class: "schema-prefix", text: `${d.schema}.` }));
+  h1.append(`${d.name}(${d.args})`);
+  document.title = `${d.name} · PG Studio`;
+
+  const facts = [el("span", { class: "kind-fact", text: d.kind })];
+  if (d.kind !== "aggregate") facts.push(fact("Language ", el("b", { text: d.language })));
+  if (d.returns !== null) facts.push(fact("Returns ", el("b", { class: "mono", text: d.returns })));
+  facts.push(fact("Volatility ", el("b", { text: d.volatility })));
+  if (d.securityDefiner) facts.push(el("span", { class: "rt-badge", title: "Runs with the privileges of its owner, not the caller", text: "SECURITY DEFINER" }));
+  if (d.strict) facts.push(fact("strict"));
+  if (d.leakproof) facts.push(fact("leakproof"));
+  if (d.parallel !== "unsafe") facts.push(fact("Parallel ", el("b", { text: d.parallel })));
+  if (d.rows !== null) facts.push(fact("~", el("b", { text: d.rows.toLocaleString() }), " rows returned"));
+  facts.push(fact("Owner ", el("b", { text: d.owner })));
+  $("routine-facts").replaceChildren(...facts);
+
+  const parts = [];
+  if (d.comment) parts.push(el("p", { class: "d-comment", text: d.comment }));
+
+  if (d.definition !== null) {
+    parts.push(section("Definition", null, codeBlock(d.definition, "definition")));
+  } else if (d.aggregate) {
+    parts.push(
+      section(
+        "Aggregate",
+        null,
+        kv([
+          ["Transition function", d.aggregate.transitionFunction],
+          ["State type", d.aggregate.stateType],
+          ["Final function", d.aggregate.finalFunction],
+        ]),
+        el("p", { class: "muted small", text: "Aggregates have no CREATE FUNCTION form, so only the summary is shown." }),
+      ),
+    );
+  }
+
+  if (d.usedByTriggers.length || d.returns === "trigger") {
+    parts.push(
+      section(
+        "Used by triggers",
+        d.usedByTriggers.length,
+        d.usedByTriggers.length
+          ? dtable(
+              ["Table", "Trigger", ""],
+              d.usedByTriggers.map((u) => [
+                el("span", { class: "mono", text: u.schema === state.meta.schema ? u.table : `${u.schema}.${u.table}` }),
+                el("span", { class: "mono", text: u.trigger }),
+                el("button", {
+                  type: "button",
+                  class: "link-btn",
+                  text: "Open table",
+                  onclick: () => {
+                    state.tab = "data";
+                    openTable(freshView(u.table, [], u.schema), { push: true });
+                  },
+                }),
+              ]),
+            )
+          : el("p", { class: "muted", text: "No triggers on tables you can read call this function." }),
+      ),
+    );
+  }
+
+  $("routine-body").replaceChildren(...parts);
 }
 
 // ---- Column resize -----------------------------------------------------
@@ -1752,16 +1939,21 @@ function closeInspector() {
 async function loadAllTables() {
   const lists = await Promise.all(
     state.schemas.map(async (s) => {
+      const q = new URLSearchParams({ schema: s.name });
+      const routines = api(`/routines?${q}`).then((r) => r.routines, () => []);
       try {
-        const { tables } = await api(`/tables?${new URLSearchParams({ schema: s.name })}`);
-        return tables.map((t) => ({ ...t, schema: s.name }));
+        const { tables } = await api(`/tables?${q}`);
+        return { tables: tables.map((t) => ({ ...t, schema: s.name })), routines: (await routines).map((r) => ({ ...r, schema: s.name })) };
       } catch {
-        return [];
+        return { tables: [], routines: [] };
       }
     }),
   );
-  state.allTables = lists.flat();
+  state.allTables = lists.flatMap((l) => l.tables);
+  state.allRoutines = lists.flatMap((l) => l.routines);
 }
+
+const ROUTINE_TAG = { function: "fn", procedure: "proc", aggregate: "agg", window: "win" };
 
 /** Subsequence match: returns matched character positions and a score (lower is better), or null. */
 function fuzzy(text, query) {
@@ -1805,8 +1997,11 @@ function highlighted(text, hits) {
 
 function renderJump() {
   const q = $("jump-input").value.trim().toLowerCase();
-  const all = state.allTables ?? state.tables.map((t) => ({ ...t, schema: state.tablesSchema }));
-  const here = state.current?.schema ?? state.tablesSchema;
+  const tag = (list) => list.map((r) => ({ ...r, schema: state.tablesSchema, isRoutine: true }));
+  const all = state.allTables
+    ? [...state.allTables, ...state.allRoutines.map((r) => ({ ...r, isRoutine: true }))]
+    : [...state.tables.map((t) => ({ ...t, schema: state.tablesSchema })), ...tag(state.routines)];
+  const here = state.current?.schema ?? state.routine?.schema ?? state.tablesSchema;
   let items;
   if (!q) {
     const recent = storageGet(skey("recent"), []);
@@ -1827,7 +2022,7 @@ function renderJump() {
 
   const list = $("jump-list");
   if (!state.jumpItems.length) {
-    list.replaceChildren(el("li", { class: "empty-li", text: q ? `No table or view matches "${q}".` : "Nothing to show." }));
+    list.replaceChildren(el("li", { class: "empty-li", text: q ? `No table, view or function matches "${q}".` : "Nothing to show." }));
     return;
   }
   list.replaceChildren(
@@ -1835,11 +2030,14 @@ function renderJump() {
       const name = el("span", { class: "tname" });
       if (t.schema !== here) name.append(el("span", { class: "sc", text: `${t.schema}.` }));
       name.append(highlighted(t.name, hits));
+      if (t.isRoutine) name.append(el("span", { class: "rt-tag", text: ROUTINE_TAG[t.kind] ?? "fn" }));
       const li = el(
         "li",
-        { role: "option", id: `jump-opt-${i}`, "aria-selected": String(i === state.jumpIndex) },
+        { role: "option", id: `jump-opt-${i}`, "aria-selected": String(i === state.jumpIndex), title: t.isRoutine ? `${t.name}(${t.args})` : null },
         name,
-        el("span", { class: "tmeta", text: [KIND_LABEL[t.kind], t.kind === "view" ? "" : fmtCount(t.estimatedRows)].filter(Boolean).join(", ") }),
+        t.isRoutine
+          ? el("span", { class: "tmeta rt-args", text: `(${t.args})` })
+          : el("span", { class: "tmeta", text: [KIND_LABEL[t.kind], t.kind === "view" ? "" : fmtCount(t.estimatedRows)].filter(Boolean).join(", ") }),
       );
       li.addEventListener("mousemove", () => {
         if (state.jumpIndex !== i) {
@@ -1866,6 +2064,10 @@ function chooseJump(i) {
   const item = state.jumpItems[i];
   if (!item) return;
   $("jump").close();
+  if (item.t.isRoutine) {
+    openRoutine(item.t.oid, item.t.schema, { push: true });
+    return;
+  }
   state.tab = "data";
   openTable(freshView(item.t.name, [], item.t.schema), { push: true });
 }
@@ -2069,12 +2271,17 @@ function wire() {
       showError(`There's no saved connection called "${h.conn}".`);
       return;
     }
-    if (scopeChanged(h)) {
-      enterScope(h.conn, h.db, h);
+    // A switch still loading (no meta yet) restarts with the new target.
+    if (scopeChanged(h) || !state.meta) {
+      enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+      return;
+    }
+    if (h.fn && !h.name) {
+      if (state.routine?.oid !== h.fn) openRoutine(h.fn, h.schema);
       return;
     }
     if (!h.name) {
-      if (state.current) showHome();
+      if (state.current || state.routine) showHome();
       return;
     }
     const tabChanged = h.tab !== state.tab;
@@ -2101,10 +2308,10 @@ async function init() {
     let h = readHash();
     if (!connections.some((c) => c.id === h.conn)) {
       state.pendingError = `There's no saved connection called "${h.conn}".`;
-      h = { ...h, conn: connections[0].id, db: null, name: null };
+      h = { ...h, conn: connections[0].id, db: null, name: null, fn: null };
     }
-    await enterScope(h.conn, h.db, h.name ? h : null);
-    if (state.pendingError && !h.name) {
+    await enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+    if (state.pendingError && !h.name && !h.fn) {
       showError(state.pendingError);
       state.pendingError = null;
     }

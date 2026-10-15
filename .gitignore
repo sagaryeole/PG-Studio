@@ -10,4 +10,4 @@ dist/
 TODO.md
 
 # Saved connections hold credentials (template: connections.example.json)
-connections.json
+/connections.json

@@ -7,6 +7,7 @@ import { redact } from "./db.js";
 import { errorHandler } from "./errors.js";
 import { connectionRoutes } from "./routes/connections.js";
 import { readRoutes } from "./routes/read.js";
+import { routineRoutes } from "./routes/routines.js";
 import { Pools } from "./pools.js";
 import { hostCheck, requireSameOriginForWrites, securityHeaders } from "./security.js";
 
@@ -28,6 +29,7 @@ api.use((_req, res, next) => {
 api.use(requireSameOriginForWrites(config.port));
 api.use(connectionRoutes(pools));
 api.use(readRoutes(config, pools));
+api.use(routineRoutes(config, pools));
 // Edit seam: mount `writeRoutes(config, writeDb)` here, only when explicitly enabled.
 api.use((_req, res) => {
   res.status(404).json({ error: "Not found" });

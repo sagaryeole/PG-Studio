@@ -139,6 +139,74 @@ SELECT b.id AS book_id, b.title, a.name AS author, sum(oi.quantity) AS copies_so
 FROM order_items oi JOIN books b ON b.id = oi.book_id JOIN authors a ON a.id = b.author_id
 GROUP BY b.id, b.title, a.name;
 
+-- functions and procedures
+CREATE FUNCTION book_rating(p_book_id int) RETURNS numeric
+LANGUAGE sql STABLE
+AS $$
+  SELECT round(avg(rating), 2) FROM reviews WHERE book_id = p_book_id;
+$$;
+COMMENT ON FUNCTION book_rating(int) IS 'Average review rating (1-5) for a book, or NULL if unreviewed';
+
+CREATE FUNCTION top_books_by_revenue(p_limit int DEFAULT 10)
+RETURNS TABLE (book_id int, title text, revenue_cents bigint)
+LANGUAGE plpgsql STABLE ROWS 10
+AS $$
+BEGIN
+  RETURN QUERY
+    SELECT s.book_id, s.title, s.revenue_cents::bigint
+      FROM book_sales s
+     ORDER BY s.revenue_cents DESC
+     LIMIT p_limit;
+END;
+$$;
+COMMENT ON FUNCTION top_books_by_revenue(int) IS 'Best sellers by revenue, from the book_sales materialized view';
+
+-- overloaded: format cents, optionally with a currency symbol
+CREATE FUNCTION format_price(cents int) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT to_char(cents / 100.0, 'FM999G999D00') $$;
+
+CREATE FUNCTION format_price(cents int, symbol text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT symbol || to_char(cents / 100.0, 'FM999G999D00') $$;
+
+CREATE PROCEDURE refresh_book_sales()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  REFRESH MATERIALIZED VIEW book_sales;
+END;
+$$;
+COMMENT ON PROCEDURE refresh_book_sales() IS 'Rebuild the book_sales materialized view';
+
+-- harmless trigger: strips hyphens and spaces from ISBNs on write
+CREATE FUNCTION normalize_isbn() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.isbn := regexp_replace(NEW.isbn, '[-\s]', '', 'g');
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER books_normalize_isbn
+BEFORE INSERT OR UPDATE OF isbn ON books
+FOR EACH ROW EXECUTE FUNCTION normalize_isbn();
+
+CREATE FUNCTION customer_order_count(p_customer_id bigint) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT count(*) FROM orders WHERE customer_id = p_customer_id;
+$$;
+COMMENT ON FUNCTION customer_order_count(bigint) IS 'Runs with the owner''s privileges so callers need no SELECT on orders';
+
+CREATE AGGREGATE sum_cents(int) (
+  SFUNC = int4pl,
+  STYPE = int,
+  INITCOND = '0'
+);
+
 ANALYZE;
 
 -- read-only role, exactly as the README recommends

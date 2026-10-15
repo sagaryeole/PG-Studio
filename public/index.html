@@ -117,6 +117,16 @@
 
         <div id="details-pane" class="pane details" hidden></div>
       </section>
+
+      <section id="routine" class="view" hidden>
+        <div class="view-head">
+          <div class="title-block">
+            <h1 id="routine-title"></h1>
+            <div id="routine-facts" class="facts"></div>
+          </div>
+        </div>
+        <div id="routine-body" class="pane details"></div>
+      </section>
     </main>
 
     <aside id="inspector" class="inspector" hidden aria-label="Row details">
@@ -143,7 +153,7 @@
   </div>
 
   <dialog id="jump" class="jump" aria-label="Jump to table">
-    <input id="jump-input" type="search" placeholder="Type a table name" autocomplete="off" spellcheck="false" aria-label="Table name" aria-controls="jump-list">
+    <input id="jump-input" type="search" placeholder="Type a table or function name" autocomplete="off" spellcheck="false" aria-label="Table or function name" aria-controls="jump-list">
     <ul id="jump-list" class="jump-list" role="listbox"></ul>
     <p class="jump-hint small muted"><kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open, <kbd>Esc</kbd> to close</p>
   </dialog>

@@ -745,3 +745,32 @@ dialog::backdrop { background: rgba(10, 14, 20, 0.35); }
   box-shadow: var(--shadow);
   pointer-events: none;
 }
+
+/* ---- Routines ---- */
+
+.facts .mono { font-family: var(--mono); }
+.rt-badge {
+  align-self: center;
+  font: 600 11px/1.5 var(--sans);
+  letter-spacing: 0.02em;
+  padding: 0 7px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-text);
+}
+#routine-title { font-weight: 600; }
+.jump-list .rt-tag {
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 500 11px/1.5 var(--sans);
+}
+.jump-list .rt-args {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}

@@ -45,6 +45,8 @@ export interface TriggerDetail {
   name: string;
   definition: string;
   enabled: boolean;
+  /** pg_proc oid of the trigger function, for linking to the routine view. */
+  functionOid: string | null;
 }
 
 export interface TableDetails {
@@ -148,7 +150,8 @@ const CONSTRAINTS_SQL = `
 const TRIGGERS_SQL = `
   SELECT t.tgname::text                    AS name,
          pg_get_triggerdef(t.oid, true)    AS definition,
-         t.tgenabled <> 'D'                AS enabled
+         t.tgenabled <> 'D'                AS enabled,
+         t.tgfoid::text                    AS function_oid
     FROM pg_catalog.pg_trigger t
    WHERE t.tgrelid = $1::oid
      AND NOT t.tgisinternal
@@ -249,6 +252,7 @@ export async function fetchDetails(client: pg.PoolClient, t: TableMeta): Promise
     name: r.name,
     definition: r.definition,
     enabled: r.enabled,
+    functionOid: r.function_oid ?? null,
   }));
 
   const total = num(ov.total_bytes);

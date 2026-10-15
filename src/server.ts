@@ -6,6 +6,7 @@ import { checkRole } from "./catalog.js";
 import { createDb, redact } from "./db.js";
 import { errorHandler } from "./errors.js";
 import { readRoutes } from "./routes/read.js";
+import { routineRoutes } from "./routes/routines.js";
 import { hostCheck, requireSameOriginForWrites, securityHeaders } from "./security.js";
 
 const config = loadConfig();
@@ -25,6 +26,7 @@ api.use((_req, res, next) => {
 });
 api.use(requireSameOriginForWrites(config.port));
 api.use(readRoutes(config, db));
+api.use(routineRoutes(config, db));
 // Edit seam: mount `writeRoutes(config, writeDb)` here, only when explicitly enabled.
 api.use((_req, res) => {
   res.status(404).json({ error: "Not found" });

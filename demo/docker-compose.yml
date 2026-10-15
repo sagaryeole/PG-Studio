@@ -1,0 +1,21 @@
+# Throwaway PostgreSQL with demo data, for trying PG Studio.
+#   npm run demo:db     start it (first start seeds ~430k fake rows, takes a few seconds)
+#   npm run demo        run PG Studio against it on http://127.0.0.1:4321
+#   npm run demo:down   stop it and delete the data
+name: pg-studio-demo
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bookshop
+      POSTGRES_PASSWORD: demo_admin
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      # TCP + role check: initdb's temporary server only listens on the socket.
+      test: ["CMD-SHELL", "psql -h 127.0.0.1 -U postgres -d bookshop -tAc \"select 1 from pg_roles where rolname = 'pgstudio_ro'\" | grep -q 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

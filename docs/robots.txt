@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sagaryeole.github.io/PG-Studio/sitemap.xml

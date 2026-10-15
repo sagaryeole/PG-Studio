@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" width="520" height="128" role="img" aria-label="PG Studio">
+  <title>PG Studio</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a78b0"/>
+      <stop offset="1" stop-color="#24507a"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="24" y="26" width="80" height="16" rx="5" fill="#ffffff"/>
+  <rect x="24" y="50" width="80" height="12" rx="4" fill="#ffffff" fill-opacity="0.45"/>
+  <rect x="24" y="70" width="80" height="12" rx="4" fill="#ffd75e"/>
+  <rect x="24" y="90" width="80" height="12" rx="4" fill="#ffffff" fill-opacity="0.45"/>
+  <rect x="50" y="26" width="4" height="76" fill="#2c5f8f" fill-opacity="0.9"/>
+  <text x="156" y="76" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="58" font-weight="700" letter-spacing="-1" fill="#18202c">PG Studio</text>
+  <text x="158" y="108" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="19" fill="#5e6a7d">read-only PostgreSQL browser</text>
+</svg>

@@ -47,7 +47,35 @@
             <button id="next" type="button">Next ›</button>
           </div>
         </div>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search text columns">
+          <button id="add-filter" type="button">+ Filter</button>
+          <div id="chips" class="chips" aria-label="Active filters"></div>
+          <span class="spacer"></span>
+          <div class="menu-wrap">
+            <button id="columns-btn" type="button" aria-haspopup="true" aria-expanded="false">Columns</button>
+            <div id="columns-menu" class="menu" hidden></div>
+          </div>
+          <div class="menu-wrap">
+            <button id="export-btn" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+            <div id="export-menu" class="menu" hidden>
+              <button type="button" data-format="csv">Download CSV</button>
+              <button type="button" data-format="json">Download JSON</button>
+              <p id="export-note" class="small muted"></p>
+            </div>
+          </div>
+        </div>
+
+        <form id="filter-form" class="filter-form" hidden>
+          <select id="ff-col" aria-label="Column"></select>
+          <select id="ff-op" aria-label="Operator"></select>
+          <input id="ff-val" type="text" placeholder="value" autocomplete="off" spellcheck="false" aria-label="Value">
+          <button type="submit" class="primary">Apply</button>
+          <button type="button" id="ff-cancel">Cancel</button>
+        </form>
+
         <p id="warning" class="warning small" hidden></p>
+        <p id="notice" class="notice small" hidden></p>
         <div class="grid-wrap">
           <table id="grid" class="grid">
             <thead></thead>
@@ -71,7 +99,10 @@
       <p id="insp-note" class="muted small"></p>
       <div class="inspector-actions">
         <button id="insp-copy" type="button">Copy value</button>
+        <button id="insp-copy-row" type="button">Copy row as JSON</button>
+        <button id="insp-filter" type="button">Filter by this value</button>
       </div>
+      <div id="insp-links" class="insp-links"></div>
     </aside>
   </div>
 </body>

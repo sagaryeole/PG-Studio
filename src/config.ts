@@ -13,6 +13,10 @@ export interface Config {
   readonly pageSizeMax: number;
   /** Max characters returned per cell; longer values are cut server-side. */
   readonly cellCharLimit: number;
+  /** Max rows in one CSV/JSON export. */
+  readonly exportMaxRows: number;
+  /** Max characters per cell in an export (higher than the grid's limit). */
+  readonly exportCellCharLimit: number;
 }
 
 function intFromEnv(name: string, fallback: number, min: number, max: number): number {
@@ -45,5 +49,7 @@ export function loadConfig(): Config {
     pageSizeDefault: 50,
     pageSizeMax: 100,
     cellCharLimit: 5000,
+    exportMaxRows: intFromEnv("EXPORT_MAX_ROWS", 10_000, 1, 100_000),
+    exportCellCharLimit: 100_000,
   };
 }

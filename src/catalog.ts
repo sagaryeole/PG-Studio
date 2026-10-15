@@ -28,6 +28,23 @@ export interface ColumnMeta {
    * read-only role this is always false. Edit mode (future) will require it.
    */
   canUpdate: boolean;
+  /** pg_type.typcategory: S=string, N=numeric, D=date/time, B=boolean, U=user (json, uuid…), E=enum, A=array … */
+  category: string;
+}
+
+/** A foreign key, seen from either side. Column lists are in key order and pair up by index. */
+export interface ForeignKey {
+  name: string;
+  /** The table holding the foreign key columns. */
+  fromSchema: string;
+  fromTable: string;
+  fromColumns: string[];
+  /** The referenced table. */
+  toSchema: string;
+  toTable: string;
+  toColumns: string[];
+  /** Whether the current role can SELECT the other table, i.e. navigation is possible. */
+  navigable: boolean;
 }
 
 export interface TableMeta {
@@ -39,6 +56,10 @@ export interface TableMeta {
   columns: ColumnMeta[];
   /** Primary-key column names in key order. Empty if the table has no PK. */
   primaryKey: string[];
+  /** FKs on this table pointing elsewhere. */
+  foreignKeys: ForeignKey[];
+  /** FKs on other tables pointing at this one. */
+  referencedBy: ForeignKey[];
 }
 
 export interface RoleCheck {
@@ -132,8 +153,10 @@ const COLUMNS_SQL = `
          a.atthasdef                                 AS has_default,
          a.attgenerated <> ''                        AS is_generated,
          a.attidentity  <> ''                        AS is_identity,
-         has_column_privilege(a.attrelid, a.attnum, 'UPDATE') AS can_update
+         has_column_privilege(a.attrelid, a.attnum, 'UPDATE') AS can_update,
+         t.typcategory::text                         AS category
     FROM pg_catalog.pg_attribute a
+    JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
    WHERE a.attrelid = $1::oid
      AND a.attnum > 0
      AND NOT a.attisdropped
@@ -149,6 +172,36 @@ const PK_SQL = `
    WHERE i.indrelid = $1::oid
      AND i.indisprimary
    ORDER BY k.ord`;
+
+// Column-name arrays for a constraint, in key order. Cast to text[] so node-pg parses them.
+const FK_COLS = (keyCol: "conkey" | "confkey", relCol: "conrelid" | "confrelid") => `
+  ARRAY(SELECT a.attname
+          FROM unnest(con.${keyCol}) WITH ORDINALITY AS k(attnum, ord)
+          JOIN pg_catalog.pg_attribute a ON a.attrelid = con.${relCol} AND a.attnum = k.attnum
+         ORDER BY k.ord)::text[]`;
+
+// conparentid = 0 skips the per-partition clones of a constraint on a partitioned table.
+const FKS_SQL = `
+  SELECT con.conname::text                 AS name,
+         fn.nspname::text                  AS from_schema,
+         fc.relname::text                  AS from_table,
+         ${FK_COLS("conkey", "conrelid")}  AS from_columns,
+         tn.nspname::text                  AS to_schema,
+         tc.relname::text                  AS to_table,
+         ${FK_COLS("confkey", "confrelid")} AS to_columns,
+         CASE WHEN con.conrelid = $1::oid
+              THEN has_table_privilege(con.confrelid, 'SELECT')
+              ELSE has_table_privilege(con.conrelid, 'SELECT') END AS navigable,
+         con.conrelid = $1::oid            AS outgoing
+    FROM pg_catalog.pg_constraint con
+    JOIN pg_catalog.pg_class fc     ON fc.oid = con.conrelid
+    JOIN pg_catalog.pg_namespace fn ON fn.oid = fc.relnamespace
+    JOIN pg_catalog.pg_class tc     ON tc.oid = con.confrelid
+    JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace
+   WHERE con.contype = 'f'
+     AND con.conparentid = 0
+     AND (con.conrelid = $1::oid OR con.confrelid = $1::oid)
+   ORDER BY con.conname`;
 
 /**
  * Resolve a user-supplied table name to catalog metadata.
@@ -170,7 +223,7 @@ export async function resolveTable(
   const t = found.rows[0];
   if (!t) return null;
 
-  const [cols, pk] = await Promise.all([
+  const [cols, pk, fks] = await Promise.all([
     client.query<{
       name: string;
       type: string;
@@ -179,12 +232,40 @@ export async function resolveTable(
       is_generated: boolean;
       is_identity: boolean;
       can_update: boolean;
+      category: string;
     }>(COLUMNS_SQL, [t.oid]),
     client.query<{ name: string }>(PK_SQL, [t.oid]),
+    client.query<{
+      name: string;
+      from_schema: string;
+      from_table: string;
+      from_columns: string[];
+      to_schema: string;
+      to_table: string;
+      to_columns: string[];
+      navigable: boolean;
+      outgoing: boolean;
+    }>(FKS_SQL, [t.oid]),
   ]);
 
   const primaryKey = pk.rows.map((r) => r.name);
   const pkSet = new Set(primaryKey);
+
+  const toFk = (r: (typeof fks.rows)[number]): ForeignKey => ({
+    name: r.name,
+    fromSchema: r.from_schema,
+    fromTable: r.from_table,
+    fromColumns: r.from_columns,
+    toSchema: r.to_schema,
+    toTable: r.to_table,
+    toColumns: r.to_columns,
+    navigable: r.navigable,
+  });
+  // A self-referencing FK (e.g. employees.manager_id -> employees.id) appears in both lists.
+  const foreignKeys = fks.rows.filter((r) => r.outgoing).map(toFk);
+  const referencedBy = fks.rows
+    .filter((r) => r.to_schema === t.schema && r.to_table === t.name)
+    .map(toFk);
 
   return {
     oid: t.oid,
@@ -193,6 +274,8 @@ export async function resolveTable(
     kind: kindOf(t.relkind),
     estimatedRows: estimate(t.reltuples),
     primaryKey,
+    foreignKeys,
+    referencedBy,
     columns: cols.rows.map((c) => ({
       name: c.name,
       type: c.type,
@@ -202,6 +285,7 @@ export async function resolveTable(
       isGenerated: c.is_generated,
       isIdentity: c.is_identity,
       canUpdate: c.can_update,
+      category: c.category,
     })),
   };
 }

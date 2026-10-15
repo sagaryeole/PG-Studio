@@ -4,16 +4,16 @@ Ordered by value for effort. Rule of thumb: stop adding features once the tool n
 
 Guardrails for every item: the browser never sends SQL, identifiers come from the catalog only, values are bind parameters, and anything that reads must keep the row limit and timeout.
 
-## Next: better reading (no data changes)
+## Done: better reading (no data changes)
 
-- [ ] **Sorting and per-column filters.** Server-side, fixed operator set (`=`, `contains`, `>`, `<`, `is null`, `is not null`). Column names are validated against the catalog. Biggest usability gain.
-- [ ] **Resizable and hideable columns, frozen first column.** Fixes the wide-table problem.
-- [ ] **Foreign-key navigation.** Click a foreign-key value to jump to the referenced row. Needs `pg_constraint` lookups in `catalog.ts`.
-- [ ] **Copy and export.** Copy as CSV or JSON, export the current view. Capped at a row limit.
-- [ ] **Search across a table.** Text columns only, with the statement timeout.
-- [ ] **Cell inspector improvements.** Pretty-print JSON, decode bytea, show timestamps in local timezone.
+- [x] **Sorting and per-column filters.** Server-side, fixed operator set (`=`, `contains`, `>`, `<`, `is null`, `is not null`). Column names are validated against the catalog. Biggest usability gain.
+- [x] **Resizable and hideable columns, frozen first column.** Fixes the wide-table problem.
+- [x] **Foreign-key navigation.** Click a foreign-key value to jump to the referenced row. Needs `pg_constraint` lookups in `catalog.ts`.
+- [x] **Copy and export.** Copy as CSV or JSON, export the current view. Capped at a row limit.
+- [x] **Search across a table.** Text columns only, with the statement timeout.
+- [x] **Cell inspector improvements.** Pretty-print JSON, bytea size, timestamps in local timezone, copy row as JSON, filter by value. (Decoding bytea as text/image is still open.)
 
-## Then: scale and structure
+## Next: scale and structure
 
 - [ ] **Keyset paging by primary key.** Makes deep pages on big tables fast (`WHERE pk > last`). Replaces OFFSET, which is the main limitation in the README.
 - [ ] **Views, materialized views, schema switcher.**
@@ -30,5 +30,7 @@ Guardrails for every item: the browser never sends SQL, identifiers come from th
 
 - Deep paging is slow on big tables (OFFSET).
 - Tables without a primary key are ordered by `ctid`, so pages can shift while the table changes.
-- Row counts are planner estimates.
+- Row counts are planner estimates (none shown while filtered).
+- Filters and sorts on unindexed columns scan the table (bounded by the statement timeout).
+- CSV export writes NULL as an empty cell.
 - Values are shown as Postgres text output (bytea as `\x…`, timestamps in the server timezone).

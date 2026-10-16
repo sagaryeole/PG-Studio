@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
 
 // Browser tests for the front end. They start the built server themselves, so
@@ -7,6 +8,10 @@ import { defineConfig, devices } from "@playwright/test";
 // The app rejects Host headers other than the one it listens on, so always use
 // 127.0.0.1 here, never localhost.
 const PORT = 4361;
+
+// The read-only demo role's password: a throwaway that only exists inside the
+// local demo container. Read it from demo/demo.env instead of repeating it here.
+const demoPassword = /^PGPASSWORD=(.*)$/m.exec(readFileSync("demo/demo.env", "utf8"))?.[1]?.trim() ?? "";
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -25,7 +30,7 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     env: {
       CONNECTIONS_FILE: "demo/connections.json",
-      PGPASSWORD: "demo_ro",
+      PGPASSWORD: demoPassword,
       PORT: String(PORT),
     },
   },

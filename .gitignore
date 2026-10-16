@@ -11,3 +11,8 @@ TODO.md
 
 # Saved connections hold credentials (template: connections.example.json)
 /connections.json
+
+# Playwright output
+test-results/
+playwright-report/
+blob-report/

@@ -43,7 +43,8 @@
     "demo:down": "docker compose -f demo/docker-compose.yml down -v",
     "demo": "tsx watch --env-file=demo/demo.env src/server.ts",
     "test:smoke": "bash scripts/smoke-test.sh",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -51,6 +52,7 @@
     "pg-connection-string": "^2.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/express": "^5.0.3",
     "@types/node": "^20.19.43",
     "@types/pg": "^8.15.0",

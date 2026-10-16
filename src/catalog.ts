@@ -242,30 +242,29 @@ export async function resolveTable(
   const t = found.rows[0];
   if (!t) return null;
 
-  const [cols, pk, fks] = await Promise.all([
-    client.query<{
-      name: string;
-      type: string;
-      nullable: boolean;
-      has_default: boolean;
-      is_generated: boolean;
-      is_identity: boolean;
-      can_update: boolean;
-      category: string;
-    }>(COLUMNS_SQL, [t.oid]),
-    client.query<{ name: string }>(PK_SQL, [t.oid]),
-    client.query<{
-      name: string;
-      from_schema: string;
-      from_table: string;
-      from_columns: string[];
-      to_schema: string;
-      to_table: string;
-      to_columns: string[];
-      navigable: boolean;
-      outgoing: boolean;
-    }>(FKS_SQL, [t.oid]),
-  ]);
+  // One client runs one query at a time, so these go in sequence (pg 9 rejects overlapping calls).
+  const cols = await client.query<{
+    name: string;
+    type: string;
+    nullable: boolean;
+    has_default: boolean;
+    is_generated: boolean;
+    is_identity: boolean;
+    can_update: boolean;
+    category: string;
+  }>(COLUMNS_SQL, [t.oid]);
+  const pk = await client.query<{ name: string }>(PK_SQL, [t.oid]);
+  const fks = await client.query<{
+    name: string;
+    from_schema: string;
+    from_table: string;
+    from_columns: string[];
+    to_schema: string;
+    to_table: string;
+    to_columns: string[];
+    navigable: boolean;
+    outgoing: boolean;
+  }>(FKS_SQL, [t.oid]);
 
   const primaryKey = pk.rows.map((r) => r.name);
   const pkSet = new Set(primaryKey);

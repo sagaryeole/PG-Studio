@@ -34,6 +34,19 @@ npm run build
 npm run test:smoke        # needs the demo DB and a running server (npm run demo)
 ```
 
+### Browser tests
+
+`tests/e2e/` holds [Playwright](https://playwright.dev) tests that drive the real UI in Chromium. They catch what the API smoke test can't: unstyled panels, stray text like "null" in the chrome, console errors and broken navigation. Any uncaught page error or `console.error` fails a test.
+
+```bash
+npm run demo:db                      # demo DB on 127.0.0.1:55432 (leave it running)
+npm run build                        # the tests run dist/server.js, so rebuild after changing src/
+npx playwright install chromium      # once
+npm run test:e2e
+```
+
+The tests start their own server on port 4361, so they don't clash with `npm run demo` on 4321. The front end in `public/` is served as-is, so UI changes need no rebuild.
+
 ## The safety rules
 
 Every change must keep these. They're what makes PG Studio safe to point at a real database:

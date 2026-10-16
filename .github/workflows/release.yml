@@ -14,29 +14,25 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing (OIDC) and provenance
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@11
       - run: npm ci
       - name: Check the tag matches package.json
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver="$(node -p 'require("./package.json").version')"
           [ "$tag" = "$ver" ] || { echo "Tag v$tag doesn't match package.json $ver"; exit 1; }
-      - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::NPM_TOKEN secret is not set; skipping npm publish."
-            exit 0
-          fi
-          npm publish --provenance --access public
+      # No token: npm trusts this workflow (package settings → Trusted Publisher)
+      # and adds provenance automatically.
+      - run: npm publish --access public
 
   container:
     name: Publish container image

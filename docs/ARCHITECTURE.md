@@ -4,7 +4,7 @@ PG Studio is a single Node.js process: an Express server that serves a static fr
 
 ```mermaid
 flowchart LR
-  B["Browser<br/>public/app.js"] -- "GET /api/… (no SQL)" --> S["Express<br/>src/server.ts"]
+  B["Browser<br/>public/app.js"] -- "GET /api/… (no SQL)<br/>POST /api/sql (editor)" --> S["Express<br/>src/server.ts"]
   S --> SEC["security.ts<br/>Host check · CSP · same-origin guard"]
   SEC --> PL["pools.ts<br/>?conn &amp; ?db → pool"]
   PL --> R["routes/read.ts · routines.ts"]
@@ -12,7 +12,8 @@ flowchart LR
   R --> Q["query.ts<br/>validate sort / filters / search"]
   R --> RW["rows.ts<br/>keyset / offset SELECT, export"]
   R --> D["details.ts<br/>structure tab, count"]
-  C & RW & D --> DB["db.ts<br/>withReadOnly():<br/>BEGIN READ ONLY · statement_timeout · ROLLBACK"]
+  PL --> SQ["routes/sql.ts → sql.ts<br/>one statement, wrapped in SELECT,<br/>own connection, no superusers"]
+  C & RW & D & SQ --> DB["db.ts<br/>withReadOnly():<br/>BEGIN READ ONLY · statement_timeout · ROLLBACK"]
   DB --> PG[("PostgreSQL<br/>SELECT-only role")]
 ```
 
@@ -30,11 +31,14 @@ src/
   details.ts       Structure tab (sizes, stats, indexes, constraints, triggers, DDL) and exact count
   query.ts         sort/filter/search: validation and WHERE/ORDER BY building
   rows.ts          builds the SELECT; keyset/offset page fetch, export fetch, CSV/JSON output
+  sqltext.ts       SQL editor: scans the text (strings, comments) to count statements and find the first keyword
+  sql.ts           SQL editor: runs one wrapped read query, EXPLAIN, export
   security.ts      Host check, CSP headers, same-origin guard for writes
   errors.ts        HttpError + safe PostgreSQL error mapping
   routes/read.ts   /meta, /schemas, /tables, /tables/:name (+ /details, /count, /export)
   routes/connections.ts  /connections, /databases
   routes/routines.ts     /routines, /routines/:oid
+  routes/sql.ts          POST /sql, /sql/export (only when SQL_EDITOR is on)
 public/
   index.html, app.js, styles.css     the whole UI, no framework, no build
 demo/
@@ -52,6 +56,8 @@ scripts/
 5. **`rows.ts`** builds the `SELECT` from catalog identifiers quoted with `pg.escapeIdentifier`, cuts long values inside PostgreSQL, and chooses keyset or offset paging.
 6. **`db.ts`** runs everything in `BEGIN TRANSACTION READ ONLY` with a per-transaction `statement_timeout`, and **always rolls back**.
 7. **`errors.ts`** maps known PostgreSQL error codes to safe messages and redacts connection strings from anything logged.
+
+The SQL editor takes a different route: **`routes/sql.ts`** accepts a JSON `POST` (so the same-origin guard applies), and **`sql.ts`** checks the text with `sqltext.ts`, refuses superusers, and sends `SELECT * FROM (<text>) AS pgstudio_query LIMIT n` as one statement over the extended protocol, in `withReadOnly` with `SQL_TIMEOUT_MS` and a connection that is discarded afterwards. PostgreSQL errors caused by the query are returned as they are, with the position mapped back into the user's text.
 
 ## Design decisions
 

@@ -48,6 +48,12 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(known.status).json({ error: known.message });
     return;
   }
+  // Request bodies that express.json() rejected: too large, or not valid JSON.
+  const http = err as { status?: unknown; expose?: unknown } | null;
+  if (typeof http?.status === "number" && http.status >= 400 && http.status < 500 && http.expose === true) {
+    res.status(http.status).json({ error: http.status === 413 ? "Request too large" : "Invalid request body" });
+    return;
+  }
   const errno = (err as { code?: unknown } | null)?.code;
   if (errno === "ECONNREFUSED" || errno === "ENOTFOUND" || errno === "ETIMEDOUT") {
     res.status(502).json({ error: "Cannot reach the database" });

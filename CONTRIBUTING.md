@@ -51,7 +51,7 @@ The tests start their own server on port 4361, so they don't clash with `npm run
 
 Every change must keep these. They're what makes PG Studio safe to point at a real database:
 
-1. **The browser never sends SQL.** No endpoint accepts SQL text, fragments or type names.
+1. **No SQL text from requests, except in the SQL editor.** No other endpoint accepts SQL text, fragments or type names. The editor's text goes only through `src/sql.ts`: one statement over the extended protocol, wrapped in `SELECT * FROM (…)`, in a read-only transaction on a connection that is closed afterwards, never for superusers.
 2. **Identifiers come from the catalog.** Table and column names in a request are only ever looked up (as bind parameters) and then replaced by the catalog's own name, quoted with `pg.escapeIdentifier`.
 3. **Values are bind parameters.** Always. Escape LIKE wildcards in values used with LIKE.
 4. **Reads stay bounded.** Keep the row limit, cell length cut, export cap and `statement_timeout`.

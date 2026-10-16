@@ -54,6 +54,8 @@ const state = {
   jumpItems: [],
   pendingError: null, // shown once the next table load succeeds
   jumpIndex: 0,
+  /** SQL editor: run state, last result and the selected result cell. */
+  query: { seq: 0, running: null, result: null, selected: null, errorAt: null, last: null, outcome: null },
 };
 
 // ---- Utilities ---------------------------------------------------------
@@ -92,6 +94,11 @@ function el(tag, props = {}, ...children) {
   }
   for (const c of children) if (c != null && c !== false) node.append(c);
   return node;
+}
+
+/** Show one of the main sections: "empty" (home), "view" (a table), "routine" or "query". */
+function showSection(id) {
+  for (const s of ["empty", "view", "routine", "query"]) $(s).hidden = s !== id;
 }
 
 function showError(msg) {
@@ -236,7 +243,8 @@ function readHash() {
   const name = p.get("t");
   const schema = p.get("sc") || state.meta?.schema || "public";
   const fn = /^\d{1,10}$/.test(p.get("fn") || "") ? p.get("fn") : null;
-  if (!name) return { conn, db, schema, name: null, fn };
+  const sql = p.has("sql") ? p.get("sql") : null;
+  if (!name) return { conn, db, schema, name: null, fn, sql };
   const page = Math.max(1, parseInt(p.get("p") || "1", 10) || 1);
   const size = parseInt(p.get("n") || "", 10);
   const pageSize = [25, 50, 100].includes(size) ? size : state.meta?.pageSizeDefault ?? 50;
@@ -393,12 +401,17 @@ function renderScopeMenu(menuId, items, current, onPick, footer) {
   if (footer) menu.append(el("hr"), el("p", { class: "small muted", text: footer }));
 }
 
+/** When the SQL editor is open, switching connection or database keeps it open with its text. */
+function editorTarget() {
+  return $("query").hidden ? null : { sql: "", keepEditor: true };
+}
+
 function openConnMenu() {
   renderScopeMenu(
     "conn-menu",
     state.connections.map((c) => ({ value: c.id, label: c.name, sub: connLabel(c) })),
     state.scope?.conn,
-    (id) => enterScope(id, null, null, { push: true }),
+    (id) => enterScope(id, null, editorTarget(), { push: true }),
     "Saved connections live in connections.json next to the app.",
   );
 }
@@ -408,7 +421,7 @@ function openDbMenu() {
     "db-menu",
     state.databases.map((d) => ({ value: d.name, label: d.name, meta: d.sizeBytes === null ? "" : fmtBytes(d.sizeBytes) })),
     state.scope?.db,
-    (name) => enterScope(state.scope.conn, name, null, { push: true }),
+    (name) => enterScope(state.scope.conn, name, editorTarget(), { push: true }),
     state.databases.length ? null : "No other databases this role can connect to.",
   );
 }
@@ -423,6 +436,10 @@ function openSchemaMenu() {
       try {
         $("filter").value = "";
         await loadTables(name);
+        if (!$("query").hidden) {
+          renderQueryHead();
+          writeQueryHash(false);
+        }
       } catch (err) {
         showError(err.message);
       }
@@ -456,9 +473,7 @@ function showHome() {
   state.current = null;
   state.data = null;
   state.routine = null;
-  $("view").hidden = true;
-  $("routine").hidden = true;
-  $("empty").hidden = false;
+  showSection("empty");
   closeInspector();
   renderTables();
   renderHome();
@@ -471,6 +486,7 @@ function showHome() {
  */
 async function enterScope(conn, db, h, { push = false } = {}) {
   const seq = ++state.seq;
+  cancelQuery();
   closeMenus();
   closeInspector();
   showError("");
@@ -478,9 +494,7 @@ async function enterScope(conn, db, h, { push = false } = {}) {
   const prevDefault = state.scope?.conn === conn ? state.scope.defaultDb : null;
   state.scope = { conn, db, defaultDb: prevDefault };
   Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], routines: [], allRoutines: null, tablesSchema: null, allTables: null, current: null, data: null, details: null, routine: null });
-  $("view").hidden = true;
-  $("routine").hidden = true;
-  $("empty").hidden = false;
+  showSection("empty");
   $("empty").replaceChildren();
   renderScope();
   renderTables();
@@ -491,12 +505,16 @@ async function enterScope(conn, db, h, { push = false } = {}) {
     Object.assign(state.scope, { db: meta.database, defaultDb: dbs.default });
     Object.assign(state, { meta, schemas, databases: dbs.databases });
     applyMode();
+    $("sql-btn").hidden = !meta.capabilities.sql;
+    $("fp-open-sql").hidden = !meta.capabilities.sql;
     const startSchema = h && schemas.some((s) => s.name === h.schema) ? h.schema : meta.schema;
     await loadTables(startSchema);
     if (seq !== state.seq) return;
     renderScope();
     if (h?.fn && !h.name) {
       openRoutine(h.fn, startSchema);
+    } else if (h?.sql != null && !h.name) {
+      openQuery({ text: h.sql || null, fromLink: !!h.sql && !h.keepEditor });
     } else if (h?.name) {
       state.tab = h.tab;
       openTable({ ...h.view, schema: startSchema });
@@ -668,6 +686,8 @@ function renderHome() {
       el("dd", { text: "Jump to any table or view, in any schema." }),
       el("dt", {}, el("kbd", { text: "/" })),
       el("dd", { text: "Search the open table." }),
+      state.meta?.capabilities.sql ? el("dt", {}, el("kbd", { text: "Q" })) : null,
+      state.meta?.capabilities.sql ? el("dd", { text: "Write a SQL query. It runs read-only, one statement at a time." }) : null,
       el("dt", {}, el("kbd", { text: "▾" })),
       el("dd", { text: "On a column header: sort, filter or hide that column." }),
       el("dt", {}, el("kbd", { text: "↗" })),
@@ -761,9 +781,7 @@ async function openTable(cur, { push = false } = {}) {
       $("search").value = cur.q;
     } else {
       state.data = null;
-      $("view").hidden = true;
-      $("routine").hidden = true;
-      $("empty").hidden = false;
+      showSection("empty");
       renderHome();
     }
     showError(
@@ -838,9 +856,7 @@ function renderView() {
   const t = d.table;
   const cur = state.current;
 
-  $("empty").hidden = true;
-  $("routine").hidden = true;
-  $("view").hidden = false;
+  showSection("view");
   const h1 = $("title");
   h1.replaceChildren();
   if (cur.schema !== state.meta.schema) h1.append(el("span", { class: "schema-prefix", text: `${t.schema}.` }));
@@ -1457,9 +1473,7 @@ async function openRoutine(oid, schema, { push = false } = {}) {
   showError("");
   showNotice("");
   writeRoutineHash(schema, oid, push);
-  $("empty").hidden = true;
-  $("view").hidden = true;
-  $("routine").hidden = false;
+  showSection("routine");
   $("routine-title").replaceChildren();
   $("routine-facts").replaceChildren();
   $("routine-body").replaceChildren(el("p", { class: "muted", text: "Loading…" }));
@@ -1482,8 +1496,7 @@ async function openRoutine(oid, schema, { push = false } = {}) {
   } catch (err) {
     if (seq !== state.seq) return;
     state.routine = null;
-    $("routine").hidden = true;
-    $("empty").hidden = false;
+    showSection("empty");
     renderHome();
     renderTables();
     showError(
@@ -1664,6 +1677,7 @@ function closeMenus() {
     ["columns-btn", "columns-menu"],
     ["export-btn", "export-menu"],
     ...SCOPE_MENUS,
+    ...SQL_MENUS,
   ]) {
     $(m).hidden = true;
     $(b).setAttribute("aria-expanded", "false");
@@ -1918,6 +1932,20 @@ async function refreshSql() {
 
 // ---- Export ------------------------------------------------------------
 
+/** Save a fetch response as a download; returns the file name used. */
+async function saveDownload(res, fallbackName) {
+  const blob = await res.blob();
+  const cd = res.headers.get("Content-Disposition") || "";
+  const name = /filename="([^"]+)"/.exec(cd)?.[1] || fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return name;
+}
+
 async function doExport(format) {
   closeMenus();
   const cur = state.current;
@@ -1925,24 +1953,8 @@ async function doExport(format) {
   showNotice("Preparing the download…");
   try {
     const res = await fetch(`/api${scoped(`${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`)}`);
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        msg = (await res.json()).error || msg;
-      } catch {
-        /* ignore */
-      }
-      throw new Error(msg);
-    }
-    const blob = await res.blob();
-    const cd = res.headers.get("Content-Disposition") || "";
-    const name = /filename="([^"]+)"/.exec(cd)?.[1] || `${cur.name}.${format}`;
-    const url = URL.createObjectURL(blob);
-    const a = el("a", { href: url, download: name });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    if (!res.ok) throw new Error((await responseError(res)).error);
+    const name = await saveDownload(res, `${cur.name}.${format}`);
 
     const rows = Number(res.headers.get("X-Export-Rows") || "0");
     const parts = [`Downloaded ${plural(rows, "row")} as ${name}.`];
@@ -2003,6 +2015,32 @@ function parsePgTimestamptz(v) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** The value box of the inspector: pretty JSON, local time, byte count and notes. */
+function renderInspectorValue(v, type, isCut) {
+  const notes = [];
+  let shown = v === null ? "NULL (no value)" : v;
+  if (v !== null && !isCut && (type === "json" || type === "jsonb")) {
+    try {
+      shown = JSON.stringify(JSON.parse(v), null, 2);
+    } catch {
+      /* show as-is */
+    }
+  }
+  if (v !== null && type === "timestamp with time zone") {
+    const dt = parsePgTimestamptz(v);
+    if (dt) notes.push(`Your local time: ${dt.toLocaleString()}`);
+  }
+  if (v !== null && type === "bytea" && v.startsWith("\\x") && !isCut) notes.push(plural((v.length - 2) / 2, "byte"));
+  if (v === "") notes.push("Empty text (not NULL).");
+  if (isCut) notes.push(`Only the first ${state.meta.cellCharLimit.toLocaleString()} characters are shown. Export to get up to 100,000.`);
+
+  const pre = $("insp-value");
+  pre.textContent = shown;
+  pre.classList.toggle("null", v === null);
+  $("insp-note").textContent = notes.join(" ");
+  $("insp-copy").disabled = v === null;
+}
+
 function openInspector(r, c) {
   const d = state.data;
   const t = d.table;
@@ -2024,28 +2062,8 @@ function openInspector(r, c) {
   $("insp-col").textContent = col.name;
   $("insp-type").textContent = tags.join(", ");
 
-  const notes = [];
-  let shown = v === null ? "NULL (no value)" : v;
-  if (v !== null && !isCut && (col.type === "json" || col.type === "jsonb")) {
-    try {
-      shown = JSON.stringify(JSON.parse(v), null, 2);
-    } catch {
-      /* show as-is */
-    }
-  }
-  if (v !== null && col.type === "timestamp with time zone") {
-    const dt = parsePgTimestamptz(v);
-    if (dt) notes.push(`Your local time: ${dt.toLocaleString()}`);
-  }
-  if (v !== null && col.type === "bytea" && v.startsWith("\\x") && !isCut) notes.push(plural((v.length - 2) / 2, "byte"));
-  if (v === "") notes.push("Empty text (not NULL).");
-  if (isCut) notes.push(`Only the first ${state.meta.cellCharLimit.toLocaleString()} characters are shown. Export to get up to 100,000.`);
-
-  const pre = $("insp-value");
-  pre.textContent = shown;
-  pre.classList.toggle("null", v === null);
-  $("insp-note").textContent = notes.join(" ");
-  $("insp-copy").disabled = v === null;
+  renderInspectorValue(v, col.type, isCut);
+  $("insp-filter").hidden = false;
   $("insp-filter").textContent = v === null ? "Show rows where this is empty" : "Show rows with this value";
   $("insp-filter").disabled = isCut;
 
@@ -2103,6 +2121,553 @@ function openInspector(r, c) {
 
 function closeInspector() {
   $("inspector").hidden = true;
+}
+
+// ---- SQL editor (read queries only) -----------------------------------------
+// The server wraps the text in a SELECT and runs it as one statement in a
+// read-only transaction (see src/sql.ts). Nothing runs by itself: a link with
+// a query in it only fills the editor.
+
+const SQL_DRAFT_KEY = "pgstudio:sql-draft";
+const SQL_HISTORY_KEY = "pgstudio:sql-history";
+const SQL_HIGHLIGHT_MAX = 20_000; // longer text is shown without colours to keep typing smooth
+const SQL_MENUS = [
+  ["sql-history-btn", "sql-history-menu"],
+  ["sql-export-btn", "sql-export-menu"],
+];
+const SQL_KEYWORDS = new Set(
+  `all analyze and any array as asc between by case cast collate cross current_date current_time
+   current_timestamp current_user desc distinct else end except exists explain false fetch filter first
+   following for from full group having ilike in inner intersect interval is join last lateral left like
+   limit materialized natural not null nulls offset on only or order outer over partition preceding range
+   recursive right rows select similar some table then ties to true unbounded union using values verbose
+   when where window with within`.split(/\s+/),
+);
+const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+const NUMBER = /(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/y;
+
+/** Split SQL into [kind, text] pieces for colouring: kw, str, com, num, id or "" (plain). */
+function sqlTokens(text) {
+  const out = [];
+  const n = text.length;
+  let i = 0;
+  const take = (kind, end) => {
+    out.push([kind, text.slice(i, end)]);
+    i = end;
+  };
+  const scanQuoted = (from, quote, backslash) => {
+    let j = from;
+    while (j < n) {
+      if (backslash && text[j] === "\\") j += 2;
+      else if (text[j] === quote && text[j + 1] === quote) j += 2;
+      else if (text[j] === quote) return j + 1;
+      else j++;
+    }
+    return n;
+  };
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === "-" && next === "-") {
+      const nl = text.indexOf("\n", i);
+      take("com", nl === -1 ? n : nl);
+    } else if (ch === "/" && next === "*") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < n && depth) {
+        if (text[j] === "/" && text[j + 1] === "*") (depth++, (j += 2));
+        else if (text[j] === "*" && text[j + 1] === "/") (depth--, (j += 2));
+        else j++;
+      }
+      take("com", j);
+    } else if (ch === "'") {
+      take("str", scanQuoted(i + 1, "'", false));
+    } else if ((ch === "E" || ch === "e") && next === "'" && !/[\w$]/.test(text[i - 1] || "")) {
+      take("str", scanQuoted(i + 2, "'", true));
+    } else if (ch === '"') {
+      take("id", scanQuoted(i + 1, '"', false));
+    } else if (ch === "$" && ((DOLLAR_TAG.lastIndex = i), DOLLAR_TAG.test(text))) {
+      const tag = text.slice(i, DOLLAR_TAG.lastIndex);
+      const close = text.indexOf(tag, i + tag.length);
+      take("str", close === -1 ? n : close + tag.length);
+    } else if (/[A-Za-z_]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[\w$]/.test(text[j])) j++;
+      take(SQL_KEYWORDS.has(text.slice(i, j).toLowerCase()) ? "kw" : "", j);
+    } else if (/[0-9.]/.test(ch) && ((NUMBER.lastIndex = i), NUMBER.test(text))) {
+      take("num", NUMBER.lastIndex);
+    } else {
+      let j = i + 1;
+      while (j < n && !/[-/'"$\w.]/.test(text[j])) j++;
+      take("", j);
+    }
+  }
+  return out;
+}
+
+/** Colour the text behind the (transparent) textarea, and underline an error position. */
+function paintSql() {
+  const ta = $("sql-input");
+  const text = ta.value;
+  const frag = document.createDocumentFragment();
+  if (text.length > SQL_HIGHLIGHT_MAX) {
+    frag.append(text);
+  } else {
+    const errAt = state.query.errorAt;
+    let at = 0;
+    let marked = false;
+    for (const [kind, piece] of sqlTokens(text)) {
+      const isErr = errAt !== null && !marked && at + piece.length > errAt && piece.trim() !== "";
+      if (isErr) marked = true;
+      const cls = [kind && `tk-${kind}`, isErr && "tk-err"].filter(Boolean).join(" ");
+      frag.append(cls ? el("span", { class: cls, text: piece }) : piece);
+      at += piece.length;
+    }
+  }
+  frag.append("\n"); // keeps the last line's height when the text ends with a newline
+  $("sql-highlight").replaceChildren(frag);
+  syncSqlScroll();
+}
+
+function syncSqlScroll() {
+  const ta = $("sql-input");
+  const pre = $("sql-highlight");
+  pre.scrollTop = ta.scrollTop;
+  pre.scrollLeft = ta.scrollLeft;
+}
+
+let draftTimer = 0;
+function setSqlText(text) {
+  $("sql-input").value = text;
+  state.query.errorAt = null;
+  paintSql();
+  storageSet(SQL_DRAFT_KEY, text);
+}
+
+/** Insert text at the caret, keeping the browser's undo history where possible. */
+function insertSqlText(text) {
+  const ta = $("sql-input");
+  ta.focus();
+  if (!document.execCommand?.("insertText", false, text)) {
+    ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+    ta.dispatchEvent(new Event("input"));
+  }
+}
+
+function sqlSchema() {
+  return state.tablesSchema ?? state.meta?.schema ?? null;
+}
+
+function writeQueryHash(push, text) {
+  const p = scopeParams();
+  const schema = sqlSchema();
+  if (schema && schema !== state.meta?.schema) p.set("sc", schema);
+  const current = new URLSearchParams(location.hash.slice(1)).get("sql") ?? "";
+  const sql = text ?? current;
+  p.set("sql", sql.length <= 2000 ? sql : "");
+  const next = `#${p.toString()}`;
+  if (location.hash === next) return;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
+
+/** Open the editor. `text` replaces what's in it (from a link or the filter panel). */
+function openQuery({ text = null, push = false, fromLink = false } = {}) {
+  ++state.seq; // supersedes any table or routine load still in flight
+  Object.assign(state, { current: null, data: null, routine: null });
+  setBusy(false);
+  closeInspector();
+  closeMenus();
+  showError("");
+  showNotice("");
+  showSection("query");
+  renderTables();
+  if (text !== null) setSqlText(text);
+  else if (!$("sql-input").value) setSqlText(storageGet(SQL_DRAFT_KEY, "") || "");
+  renderQueryHead();
+  writeQueryHash(push, fromLink ? text : (text ?? ""));
+  document.title = "SQL query · PG Studio";
+  if (fromLink && text) setQueryStatus(`Loaded from the link. Press ${MOD} ↵ to run it.`);
+  $("sql-input").focus();
+}
+
+function renderQueryHead() {
+  const m = state.meta;
+  const on = !!m?.capabilities.sql;
+  const facts = $("query-facts");
+  facts.replaceChildren();
+  if (m) {
+    const schema = sqlSchema();
+    facts.append(
+      el("span", { class: "kind-fact", text: "Read-only transaction" }),
+      el("span", {}, "First ", el("b", { text: m.sqlMaxRows.toLocaleString() }), " rows"),
+      el("span", {}, "Stops after ", el("b", { text: `${m.sqlTimeoutMs / 1000} s` })),
+      schema ? el("span", {}, "Names resolve in ", el("b", { class: "mono", text: schema }), schema === "public" ? "" : ", then public") : null,
+    );
+  }
+  const off = $("sql-off");
+  off.hidden = on || !m;
+  off.textContent = m?.role.canWrite
+    ? `The SQL editor is off for this connection: "${m.role.name}" is a superuser. Connect with a read-only role to use it.`
+    : "The SQL editor is turned off on this server (SQL_EDITOR=off).";
+  for (const id of ["sql-run", "sql-explain", "sql-analyze"]) $(id).disabled = !on || !!state.query.running;
+}
+
+function setQueryStatus(text) {
+  $("sql-status").textContent = text;
+}
+
+function fmtMs(ms) {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+}
+
+let runTimer = 0;
+function setQueryBusy(busy) {
+  $("sql-results").classList.toggle("loading", busy);
+  $("sql-cancel").hidden = !busy;
+  renderQueryHead();
+  clearInterval(runTimer);
+  if (busy) {
+    const t0 = performance.now();
+    const tick = () => setQueryStatus(`Running… ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    tick();
+    runTimer = setInterval(tick, 100);
+  }
+}
+
+async function apiPost(path, body, { signal } = {}) {
+  return fetch(`/api${scoped(path)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", "X-PG-Studio": "1" },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+async function responseError(res) {
+  try {
+    const body = await res.json();
+    return body || { error: `HTTP ${res.status}` };
+  } catch {
+    return { error: `HTTP ${res.status}` };
+  }
+}
+
+/** Run the editor's text, or only the selected part of it. */
+async function runQuery(mode = "run") {
+  if (state.query.running || !state.meta?.capabilities.sql) return;
+  const ta = $("sql-input");
+  const partial = ta.selectionStart !== ta.selectionEnd;
+  const start = partial ? ta.selectionStart : 0;
+  const text = partial ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : ta.value;
+  closeMenus();
+  showSqlError(null);
+  if (!text.trim()) {
+    showSqlError({ error: "Type a query first." });
+    return;
+  }
+  const seq = ++state.query.seq;
+  const ac = new AbortController();
+  const schema = sqlSchema();
+  state.query.running = ac;
+  setQueryBusy(true);
+  rememberQuery(text.trim());
+  if (!$("query").hidden) writeQueryHash(false, ta.value);
+  try {
+    const res = await apiPost("/sql", { sql: text, mode, schema }, { signal: ac.signal });
+    if (seq !== state.query.seq) return;
+    if (!res.ok) {
+      const err = await responseError(res);
+      if (seq !== state.query.seq) return;
+      if (typeof err.position === "number") err.position += start;
+      showSqlError(err);
+      setQueryStatus("");
+      return;
+    }
+    const body = await res.json();
+    if (seq !== state.query.seq) return;
+    state.query.last = { sql: text, schema };
+    if (body.kind === "plan") renderPlan(body);
+    else renderQueryResult(body);
+  } catch (err) {
+    if (seq !== state.query.seq) return;
+    if (err.name === "AbortError") setQueryStatus("Cancelled. The query was stopped on the server.");
+    else {
+      showSqlError({ error: err.message });
+      setQueryStatus("");
+    }
+  } finally {
+    if (seq === state.query.seq) {
+      state.query.running = null;
+      setQueryBusy(false);
+      // setQueryBusy cleared the timer, which last wrote "Running…"; restore the outcome.
+      if ($("sql-status").textContent.startsWith("Running")) setQueryStatus(state.query.outcome ?? "");
+    }
+  }
+}
+
+function cancelQuery() {
+  state.query.running?.abort();
+}
+
+function lineCol(text, pos) {
+  const before = text.slice(0, pos);
+  const line = before.split("\n").length;
+  return { line, col: pos - before.lastIndexOf("\n") };
+}
+
+function showSqlError(err) {
+  const box = $("sql-error");
+  state.query.errorAt = err && typeof err.position === "number" ? err.position : null;
+  paintSql();
+  // Results from the previous run stay visible but faded, so they aren't mistaken for this one's.
+  for (const id of ["sql-results", "sql-plan"]) $(id).classList.toggle("stale", !!err);
+  if (!err) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  const parts = [el("strong", { text: err.error })];
+  if (err.detail) parts.push(el("span", { class: "sql-error-more", text: err.detail }));
+  if (err.hint) parts.push(el("span", { class: "sql-error-more", text: `Hint: ${err.hint}` }));
+  if (state.query.errorAt !== null) {
+    const ta = $("sql-input");
+    const pos = Math.min(state.query.errorAt, ta.value.length);
+    const { line, col } = lineCol(ta.value, pos);
+    parts.push(
+      el("button", {
+        type: "button",
+        class: "link-btn small",
+        text: `Line ${line}, column ${col}`,
+        onclick: () => {
+          ta.focus();
+          ta.setSelectionRange(pos, pos);
+        },
+      }),
+    );
+  }
+  box.replaceChildren(...parts);
+  box.hidden = false;
+  state.query.outcome = "";
+}
+
+function renderPlan(body) {
+  state.query.result = null;
+  state.query.selected = null;
+  closeInspector();
+  $("sql-results").hidden = true;
+  const plan = $("sql-plan");
+  plan.textContent = body.plan;
+  plan.hidden = false;
+  $("sql-export-btn").disabled = true;
+  state.query.outcome = body.analyze ? `Ran the query and measured it: ${fmtMs(body.ms)}` : `Plan only, the query didn't run (${fmtMs(body.ms)})`;
+  setQueryStatus(state.query.outcome);
+}
+
+function renderQueryResult(body) {
+  state.query.result = body;
+  state.query.selected = null;
+  closeInspector();
+  $("sql-plan").hidden = true;
+  $("sql-results").hidden = false;
+
+  const hr = el("tr", {}, el("th", { class: "rownum", text: "#" }));
+  body.columns.forEach((col) => {
+    hr.append(
+      el(
+        "th",
+        { title: `${col.name}: ${col.type}` },
+        el("div", { class: "th-static" }, el("span", { class: "cname" }, el("span", { class: "nm", text: col.name })), el("span", { class: "ctype", text: col.type })),
+      ),
+    );
+  });
+  $("sql-grid").tHead.replaceChildren(hr);
+
+  const cut = new Set(body.truncated.map(([r, c]) => `${r}:${c}`));
+  const frag = document.createDocumentFragment();
+  if (!body.rows.length) {
+    frag.append(el("tr", {}, el("td", { class: "nodata", colspan: String(body.columns.length + 1), text: "The query returned no rows." })));
+  }
+  body.rows.forEach((row, r) => {
+    const tr = el("tr", {}, el("td", { class: "rownum", text: String(r + 1) }));
+    row.forEach((v, c) => {
+      const td = el("td", { class: body.columns[c].numeric ? "cell num" : "cell", dataset: { r: String(r), c: String(c) } });
+      if (v === null) {
+        td.classList.add("null");
+        td.textContent = "NULL";
+      } else {
+        td.textContent = v;
+        td.title = v.length > 300 ? `${v.slice(0, 300)}…` : v;
+        if (cut.has(`${r}:${c}`)) td.classList.add("cut");
+      }
+      tr.append(td);
+    });
+    frag.append(tr);
+  });
+  $("sql-grid").tBodies[0].replaceChildren(frag);
+  $("sql-results").scrollTo(0, 0);
+
+  $("sql-export-btn").disabled = body.columns.length === 0;
+  $("sql-export-note").textContent = `Runs the query again and saves up to ${state.meta.exportMaxRows.toLocaleString()} rows.`;
+  const count = body.limitHit ? `First ${plural(body.rowLimit, "row")} (there are more; export to get up to ${state.meta.exportMaxRows.toLocaleString()})` : plural(body.rows.length, "row");
+  state.query.outcome = `${count} · ${fmtMs(body.ms)}`;
+  setQueryStatus(state.query.outcome);
+}
+
+function paintQuerySelection() {
+  const grid = $("sql-grid");
+  grid.querySelectorAll("td.selected").forEach((n) => n.classList.remove("selected"));
+  grid.querySelectorAll("tr.row-selected").forEach((n) => n.classList.remove("row-selected"));
+  const s = state.query.selected;
+  const td = s && grid.querySelector(`td.cell[data-r="${s.r}"][data-c="${s.c}"]`);
+  if (td) {
+    td.classList.add("selected");
+    td.parentElement.classList.add("row-selected");
+  }
+}
+
+function selectQueryCell(r, c, { open = false, scroll = true } = {}) {
+  state.query.selected = { r, c };
+  paintQuerySelection();
+  if (scroll) $("sql-grid").querySelector(`td.cell[data-r="${r}"][data-c="${c}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (open || !$("inspector").hidden) openQueryInspector(r, c);
+}
+
+function onQueryGridKey(e) {
+  const res = state.query.result;
+  if (!res || !res.rows.length || !res.columns.length) return;
+  const map = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+  const s = state.query.selected;
+  if (map[e.key]) {
+    e.preventDefault();
+    if (!s) return selectQueryCell(0, 0);
+    const [dr, dc] = map[e.key];
+    selectQueryCell(Math.max(0, Math.min(res.rows.length - 1, s.r + dr)), Math.max(0, Math.min(res.columns.length - 1, s.c + dc)));
+  } else if (e.key === "Enter" && s) {
+    e.preventDefault();
+    openQueryInspector(s.r, s.c);
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && s) {
+    if (String(window.getSelection() || "")) return;
+    e.preventDefault();
+    const v = res.rows[s.r][s.c];
+    copyText(v === null ? "" : v, v === null ? "Copied (empty: value is NULL)" : "Copied");
+  }
+}
+
+function openQueryInspector(r, c) {
+  const res = state.query.result;
+  const col = res?.columns[c];
+  const row = res?.rows[r];
+  if (!col || !row) return;
+  state.query.selected = { r, c };
+  paintQuerySelection();
+  $("insp-col").textContent = col.name;
+  $("insp-type").textContent = col.type;
+  renderInspectorValue(row[c], col.type, res.truncated.some(([rr, cc]) => rr === r && cc === c));
+  $("insp-filter").hidden = true;
+  $("insp-links").replaceChildren();
+  $("insp-row").replaceChildren(
+    ...res.columns.map((cc, i) => {
+      const val = row[i];
+      const btn = el(
+        "button",
+        { type: "button", title: val === null ? `${cc.name}: NULL` : `${cc.name}: ${val.slice(0, 300)}` },
+        el("span", { class: "k", text: cc.name }),
+        el("span", { class: `v${val === null ? " null" : ""}`, text: val === null ? "NULL" : val }),
+      );
+      if (i === c) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", () => selectQueryCell(r, i, { open: true }));
+      return btn;
+    }),
+  );
+  $("inspector").hidden = false;
+}
+
+/** The inspected row as { row, names, c } for the table view or the SQL editor, or null. */
+function inspected() {
+  if (!$("query").hidden) {
+    const s = state.query.selected;
+    const res = state.query.result;
+    return s && res ? { row: res.rows[s.r], names: res.columns.map((x) => x.name), c: s.c } : null;
+  }
+  const s = state.selected;
+  return s && state.data ? { row: state.data.rows[s.r], names: state.data.table.columns.map((x) => x.name), c: s.c } : null;
+}
+
+// History of queries run, newest first, kept in this browser only.
+function rememberQuery(sql) {
+  const list = storageGet(SQL_HISTORY_KEY, []).filter((h) => h && typeof h.sql === "string" && h.sql !== sql);
+  const conn = state.connections.find((c) => c.id === state.scope?.conn);
+  list.unshift({ sql: sql.slice(0, 20_000), at: Date.now(), where: [conn?.name, state.scope?.db].filter(Boolean).join(" / ") });
+  storageSet(SQL_HISTORY_KEY, list.slice(0, 50));
+}
+
+function fmtAgo(at) {
+  const s = Math.round((Date.now() - at) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(at).toLocaleDateString();
+}
+
+function renderHistoryMenu() {
+  const menu = $("sql-history-menu");
+  const list = storageGet(SQL_HISTORY_KEY, []).filter((h) => h && typeof h.sql === "string");
+  if (!list.length) {
+    menu.replaceChildren(el("p", { class: "small muted", text: "Queries you run show up here. They're kept in this browser only." }));
+    return;
+  }
+  menu.replaceChildren(
+    ...list.map((h) =>
+      el(
+        "button",
+        {
+          type: "button",
+          class: "menu-item hist-item",
+          title: h.sql.slice(0, 1000),
+          onclick: () => {
+            closeMenus();
+            setSqlText(h.sql);
+            showSqlError(null);
+            $("sql-input").focus();
+          },
+        },
+        el("span", { class: "hist-sql", text: h.sql.replace(/\s+/g, " ").slice(0, 140) }),
+        el("span", { class: "hist-meta", text: [fmtAgo(h.at), h.where].filter(Boolean).join(" · ") }),
+      ),
+    ),
+    el("hr"),
+    el("button", {
+      type: "button",
+      class: "menu-item",
+      text: "Clear history",
+      onclick: () => {
+        storageSet(SQL_HISTORY_KEY, []);
+        closeMenus();
+        toast("History cleared");
+      },
+    }),
+  );
+}
+
+async function exportQuery(format) {
+  closeMenus();
+  const last = state.query.last;
+  if (!last) return;
+  showError("");
+  setQueryStatus("Preparing the download…");
+  try {
+    const res = await apiPost(`/sql/export?format=${format}`, { sql: last.sql, schema: last.schema });
+    if (!res.ok) throw new Error((await responseError(res)).error);
+    const name = await saveDownload(res, `query.${format}`);
+    const rows = Number(res.headers.get("X-Export-Rows") || "0");
+    const parts = [`Downloaded ${plural(rows, "row")} as ${name}.`];
+    if (res.headers.get("X-Export-Limit-Hit") === "1") parts.push(`It stopped at the ${state.meta.exportMaxRows.toLocaleString()}-row limit.`);
+    setQueryStatus(parts.join(" "));
+  } catch (err) {
+    setQueryStatus(state.query.outcome ?? "");
+    showError(`Download failed: ${err.message}`);
+  }
 }
 
 // ---- Jump to table -------------------------------------------------------
@@ -2371,18 +2936,22 @@ function wire() {
 
   $("insp-close").addEventListener("click", () => {
     closeInspector();
-    wrap.focus({ preventScroll: true });
+    ($("query").hidden ? wrap : $("sql-results")).focus({ preventScroll: true });
   });
   $("insp-copy").addEventListener("click", () => {
-    const s = state.selected;
-    const v = s && state.data.rows[s.r][s.c];
+    const x = inspected();
+    const v = x && x.row[x.c];
     if (v != null) copyText(v, "Copied value");
   });
   $("insp-copy-row").addEventListener("click", () => {
-    const s = state.selected;
-    if (!s) return;
+    const x = inspected();
+    if (!x) return;
     const obj = {};
-    state.data.table.columns.forEach((col, i) => (obj[col.name] = state.data.rows[s.r][i]));
+    x.names.forEach((name, i) => {
+      let key = name;
+      for (let n = 2; key in obj; n++) key = `${name}_${n}`;
+      obj[key] = x.row[i];
+    });
     copyText(JSON.stringify(obj, null, 2), "Copied row as JSON");
   });
   $("insp-filter").addEventListener("click", () => {
@@ -2416,6 +2985,54 @@ function wire() {
     if (e.target === $("jump")) $("jump").close(); // click on the backdrop
   });
 
+  // SQL editor
+  $("sql-run-kbd").textContent = IS_MAC ? "⌘↵" : "Ctrl ↵";
+  $("sql-btn").addEventListener("click", () => openQuery({ push: true }));
+  $("fp-open-sql").addEventListener("click", () => state.sql && openQuery({ text: state.sql, push: true }));
+  $("sql-run").addEventListener("click", () => runQuery("run"));
+  $("sql-explain").addEventListener("click", () => runQuery("explain"));
+  $("sql-analyze").addEventListener("click", () => runQuery("analyze"));
+  $("sql-cancel").addEventListener("click", cancelQuery);
+  const ta = $("sql-input");
+  ta.addEventListener("input", () => {
+    state.query.errorAt = null;
+    paintSql();
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => storageSet(SQL_DRAFT_KEY, ta.value), 300);
+  });
+  ta.addEventListener("scroll", syncSqlScroll, { passive: true });
+  ta.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      runQuery("run");
+    } else if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault(); // Esc first, then Tab, to leave the editor with the keyboard
+      insertSqlText("  ");
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      ta.blur();
+    }
+  });
+  for (const [btn, menu] of SQL_MENUS) {
+    $(btn).addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(btn, menu, btn === "sql-history-btn" ? renderHistoryMenu : null);
+    });
+    $(menu).addEventListener("click", (e) => e.stopPropagation());
+  }
+  $("sql-export-menu").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-format]");
+    if (b) exportQuery(b.dataset.format);
+  });
+  const results = $("sql-results");
+  results.addEventListener("keydown", onQueryGridKey);
+  $("sql-grid").tBodies[0].addEventListener("click", (e) => {
+    const td = e.target.closest("td.cell");
+    if (!td) return;
+    results.focus({ preventScroll: true });
+    selectQueryCell(Number(td.dataset.r), Number(td.dataset.c), { open: true, scroll: false });
+  });
+
   // Help dialog
   $("help-btn").addEventListener("click", () => $("help").showModal());
   $("help-close").addEventListener("click", () => $("help").close());
@@ -2432,14 +3049,14 @@ function wire() {
     }
     if ($("jump").open || $("help").open) return; // dialogs handle their own keys
     if (e.key === "Escape") {
-      if (colMenu || [...SCOPE_MENUS, ["", "columns-menu"], ["", "export-menu"]].some(([, m]) => !$(m).hidden)) closeMenus();
+      if (colMenu || [...SCOPE_MENUS, ...SQL_MENUS, ["", "columns-menu"], ["", "export-menu"]].some(([, m]) => !$(m).hidden)) closeMenus();
       else if (state.panelOpen) {
         closePanel();
         $("filter-btn").focus();
       }
       else if (!$("inspector").hidden) {
         closeInspector();
-        $("grid-wrap").focus({ preventScroll: true });
+        $($("query").hidden ? "grid-wrap" : "sql-results").focus({ preventScroll: true });
       }
       return;
     }
@@ -2451,6 +3068,10 @@ function wire() {
       e.preventDefault();
       $("search").focus();
       $("search").select();
+    } else if (e.key === "q" && state.meta?.capabilities.sql) {
+      e.preventDefault();
+      if ($("query").hidden) openQuery({ push: true });
+      else $("sql-input").focus();
     } else if (e.key === "f" && state.data && state.tab === "data") {
       e.preventDefault();
       togglePanel();
@@ -2469,7 +3090,11 @@ function wire() {
     }
     // A switch still loading (no meta yet) restarts with the new target.
     if (scopeChanged(h) || !state.meta) {
-      enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+      enterScope(h.conn, h.db, h.name || h.fn || h.sql != null ? h : null);
+      return;
+    }
+    if (h.sql != null && !h.name) {
+      if ($("query").hidden) openQuery({ text: h.sql || null });
       return;
     }
     if (h.fn && !h.name) {
@@ -2477,7 +3102,7 @@ function wire() {
       return;
     }
     if (!h.name) {
-      if (state.current || state.routine) showHome();
+      if (state.current || state.routine || !$("query").hidden) showHome();
       return;
     }
     const tabChanged = h.tab !== state.tab;
@@ -2504,9 +3129,9 @@ async function init() {
     let h = readHash();
     if (!connections.some((c) => c.id === h.conn)) {
       state.pendingError = `There's no saved connection called "${h.conn}".`;
-      h = { ...h, conn: connections[0].id, db: null, name: null, fn: null };
+      h = { ...h, conn: connections[0].id, db: null, name: null, fn: null, sql: null };
     }
-    await enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+    await enterScope(h.conn, h.db, h.name || h.fn || h.sql != null ? h : null);
     if (state.pendingError && !h.name && !h.fn) {
       showError(state.pendingError);
       state.pendingError = null;

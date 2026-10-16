@@ -1,6 +1,6 @@
 # HTTP API
 
-PG Studio's front end talks to a small JSON API under `/api`. It's served on `127.0.0.1` only and has no authentication, so treat it as a local interface, not a public one. **No endpoint accepts SQL.**
+PG Studio's front end talks to a small JSON API under `/api`. It's served on `127.0.0.1` only and has no authentication, so treat it as a local interface, not a public one. **Only the SQL editor endpoints accept SQL**, and only read queries (see below).
 
 ## Endpoints
 
@@ -8,7 +8,7 @@ PG Studio's front end talks to a small JSON API under `/api`. It's served on `12
 |---|---|
 | `GET /api/connections` | Saved connections: `id`, `name`, `user`, `host`, `port`. Never a password or URL. |
 | `GET /api/databases?conn=` | Databases on that connection's server the role may `CONNECT` to, with sizes, plus the connection's own (`default`) |
-| `GET /api/meta` | Connection id and database, default schema, connected role and whether it can write, page limits, filter operators, `capabilities.edit` (false today) |
+| `GET /api/meta` | Connection id and database, default schema, connected role and whether it can write, page limits, filter operators, `sqlMaxRows`, `sqlTimeoutMs`, `capabilities.edit` (false today) and `capabilities.sql` (the SQL editor: off for superusers or with `SQL_EDITOR=off`) |
 | `GET /api/schemas` | Schemas the role has `USAGE` on (system schemas left out), with relation counts |
 | `GET /api/tables?schema=` | Tables, views and materialized views the role can SELECT, with planner row estimates. 404 for a schema without `USAGE`. |
 | `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, category, PK, generated, `canUpdate`), primary key, foreign keys both ways, one page of rows, `hasNext`, truncated-cell list |
@@ -18,6 +18,16 @@ PG Studio's front end talks to a small JSON API under `/api`. It's served on `12
 | `GET /api/routines?schema=` | Functions, procedures, aggregates and window functions in the schema (not ones owned by extensions): `oid`, `name`, `kind`, `args`, `returns`, `language` |
 | `GET /api/routines/:oid` | One routine: flags (volatility, strict, `SECURITY DEFINER`, leakproof, parallel), owner, comment, `definition` from `pg_get_functiondef` (aggregates get a summary instead), and `usedByTriggers`. 404 unless its schema is readable. |
 | `GET /api/tables/:name/export?format=csv\|json` | The current view as a download, up to `EXPORT_MAX_ROWS`. The headers `X-Export-Rows`, `X-Export-Limit-Hit` and `X-Export-Cut-Cells` report what was included. |
+
+### SQL editor
+
+`POST /api/sql` and `POST /api/sql/export?format=csv|json` take a JSON body `{ "sql": "...", "mode": "run" | "explain" | "analyze", "schema": "public" }` (`Content-Type: application/json`, plus the `Origin` and `x-pg-studio: 1` headers every non-GET request needs). `schema` goes first on the search path.
+
+- Only one `SELECT`, `WITH … SELECT`, `VALUES` or `TABLE` statement runs; a leading `EXPLAIN [ANALYZE] [VERBOSE]` is the same as `mode`. Anything else is a 400 with a message.
+- `run` returns `{ kind: "rows", columns: [{ name, type, numeric }], rows, truncated, limitHit, rowLimit, ms }`, with at most `SQL_MAX_ROWS` rows. `explain` and `analyze` return `{ kind: "plan", plan, analyze, ms }`.
+- A PostgreSQL error caused by the query is a 400 `{ error, position, detail, hint }`, where `position` is a 0-based offset into `sql`.
+- Superuser connections get a 403. With `SQL_EDITOR=off` the endpoints don't exist (404).
+- If the request is closed before the answer (for example, the browser aborts it), the query is cancelled on the server.
 
 Rows are returned as arrays in column order (matching `table.columns`), with every value in PostgreSQL's text output format, or `null`.
 

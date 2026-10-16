@@ -5,19 +5,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-16
+
 ### Added
 
-- Saved connections in `connections.json` (or `DATABASE_URL` as before), with a connection / database / schema switcher in the top bar. Credentials never reach the browser.
+- Saved connections in `connections.json` (or `DATABASE_URL` as before), with a connection / database / schema switcher in the top bar. Credentials never reach the browser; passwordless URLs use `~/.pgpass` or `PGPASSWORD`.
 - Every database on a server: a database menu lists those the role may connect to, each opened with its own small pool on first use.
 - Functions, procedures and aggregates in the sidebar and ⌘K, with signature, flags (`SECURITY DEFINER`, volatility…), owner, source and the triggers that use them. View only.
 - Filter panel: several conditions at once, match all / any (`match=any`), conditions you can switch off, and a read-only SQL preview (`/tables/:name/sql`). Press `f`.
-- Demo database (`npm run demo:db`, `npm run demo`) with ~430k rows of generated bookshop data.
 - Demo `analytics` database, two saved demo connections, and example functions, a procedure, a trigger and an aggregate.
-- End-to-end smoke test (`npm run test:smoke`) covering the API and security controls.
-- CI on Node 20, 22 and 24, with smoke tests against PostgreSQL 14, 15, 16 and 17.
-- Open-source project files: contributing guide, code of conduct, security policy, issue and PR templates, roadmap, and a project website.
+- New endpoints: `/connections`, `/databases`, `/routines`, `/routines/:oid`, `/tables/:name/sql`. Every endpoint takes `conn` and `db`.
 
-## [0.1.0]
+### Changed
+
+- The schema picker moved from the sidebar to the top bar.
+- Links, column settings and recent tables are kept per database. Links to the default database are unchanged.
+- `@types/node` is pinned to Node 20, the oldest supported version. TypeScript 7 and `actions/checkout` / `actions/setup-node` v7.
+- New runtime dependency: `pg-connection-string` (part of node-postgres).
+
+## [0.1.0] - 2026-10-15
 
 First public version.
 
@@ -36,7 +42,12 @@ First public version.
 - Shareable URLs holding the whole view state.
 - Keyboard navigation and a shortcuts dialog.
 - Light and dark themes.
+- Demo database (`npm run demo:db`, `npm run demo`) with ~430k rows of generated bookshop data.
+- End-to-end smoke test (`npm run test:smoke`) covering the API and security controls.
+- CI on Node 20, 22 and 24, with smoke tests against PostgreSQL 14, 15, 16 and 17.
+- Open-source project files: contributing guide, code of conduct, security policy, issue and PR templates, roadmap, and a project website.
 - Security hardening: read-only transactions, catalog-only identifiers, bind parameters, bounded reads, statement timeout, `127.0.0.1` binding, `Host` header check, strict CSP, same-origin guard for writes, credential redaction.
 
-[Unreleased]: https://github.com/sagaryeole/PG-Studio/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sagaryeole/PG-Studio/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sagaryeole/PG-Studio/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sagaryeole/PG-Studio/releases/tag/v0.1.0

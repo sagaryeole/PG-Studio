@@ -19,7 +19,7 @@ Every query runs in a read-only transaction with a timeout, and the SQL editor r
 [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[**Quick start**](#quick-start) · [Features](#features) · [Security](#security) · [API](docs/API.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+[**Quick start**](#quick-start) · [Features](#features) · [SQL editor](#sql-editor) · [Security](#security) · [API](docs/API.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
 <br>
 
@@ -31,9 +31,9 @@ Every query runs in a read-only transaction with a timeout, and the SQL editor r
 
 ## Why PG Studio?
 
-Most PostgreSQL GUIs are full IDEs: connection managers, SQL editors, schema designers. That's great for database work, but heavy when you just want to **look at your data**. Sometimes you also want a tool that **can't** change anything.
+Most PostgreSQL GUIs are full IDEs: connection managers, read-write SQL consoles, schema designers. That's great for database work, but heavy when you just want to **look at your data**. Sometimes you also want a tool that **can't** change anything.
 
-PG Studio does one job: it lets you browse a PostgreSQL database quickly and safely.
+PG Studio does one job: it lets you look at a PostgreSQL database quickly and safely. Browse it with the mouse and keyboard, or ask it a question in SQL, read-only either way.
 
 - **Read-only by design.** No write routes. The SQL editor runs one read query at a time, wrapped in a `SELECT`. Every query runs in a `READ ONLY` transaction that always rolls back, and the docs walk you through a SELECT-only role, which is the real guarantee.
 - **Local only.** It binds to `127.0.0.1`, checks the `Host` header against DNS rebinding, and sends a strict Content Security Policy. Nothing leaves your machine.
@@ -241,6 +241,10 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 | Tables list is empty | Role has no SELECT grants, or the tables are in another schema | Re-run the `GRANT` lines, or set `PG_SCHEMA`. |
 | Red "role can write" badge | The configured role can modify data | Switch `DATABASE_URL` to the SELECT-only role. |
 | Page looks stale after a code change | Browser cache | Hard refresh (⌘⇧R / Ctrl+Shift+R). |
+| `The SQL editor is off for this connection` | The connection's role is a superuser | Connect with the SELECT-only role. The editor never runs as a superuser. |
+| `… can't run here. The SQL editor only runs read queries` | The statement isn't a `SELECT`, `WITH`, `VALUES` or `TABLE` | Writes, DDL and `SET` are out of scope; use `psql` or another client for those. |
+| `Run one statement at a time` | Several statements separated by `;` | Select the one you want and press <kbd>⌘</kbd> <kbd>↵</kbd>: only the selection runs. |
+| `The query ran longer than 30s and was stopped` | `SQL_TIMEOUT_MS` | Add a filter or `LIMIT`, check the plan with **Explain**, or raise `SQL_TIMEOUT_MS`. |
 
 ## Keyboard shortcuts
 
@@ -257,6 +261,37 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 | <kbd>[</kbd> <kbd>]</kbd> | Previous / next page |
 | <kbd>Esc</kbd> | Close panels and menus |
 | <kbd>?</kbd> | Show all shortcuts |
+
+## SQL editor
+
+Press <kbd>Q</kbd> (or **SQL** in the top bar), write a query, and press <kbd>⌘</kbd> <kbd>↵</kbd> (<kbd>Ctrl</kbd> <kbd>↵</kbd>). With text selected, only the selection runs, so you can keep several queries in the editor.
+
+- **Results** show each column's type. Click a cell to open it in the side panel (JSON is pretty-printed). **Export** runs the query again and saves up to `EXPORT_MAX_ROWS` rows as CSV or JSON.
+- **Explain** shows the plan without running the query. **Explain analyze** runs it and adds real timings and buffer counts. Typing `EXPLAIN` or `EXPLAIN ANALYZE` in front of the query works too.
+- **Errors** come straight from PostgreSQL, with the line and column underlined in the editor.
+- **Unqualified names** resolve in the schema picked in the top bar, then `public`.
+- **History** (the last 50 queries) and the unsent draft stay in your browser, never on the server.
+- **Links** to the editor (`#sql=…`) carry the query text but never run it. You press Run.
+- **Open in SQL editor** in the filter panel's SQL preview turns the current view into a query you can edit.
+
+What runs and what doesn't:
+
+| Runs | Doesn't run |
+|---|---|
+| `SELECT`, `WITH … SELECT`, `VALUES`, `TABLE` | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY` |
+| One statement at a time | Several statements, even when one is hidden after a `)` |
+| `EXPLAIN` and `EXPLAIN ANALYZE` (optionally `VERBOSE`) | `EXPLAIN (…)` with options in parentheses |
+| Functions the role may call | `SET`, `BEGIN` / `COMMIT`, DDL, `WITH … DELETE`, `SELECT … FOR UPDATE` |
+
+How it's fenced in:
+
+- The query always runs as `SELECT * FROM (<your query>) AS pgstudio_query LIMIT n`, sent as **one statement** on PostgreSQL's extended protocol, which refuses more than one. That's also why a plan can start with a `Subquery Scan on pgstudio_query` line.
+- It runs in a **read-only transaction** that is rolled back, with its own timeout (`SQL_TIMEOUT_MS`, 30 s), on a **connection that is closed afterwards**, so nothing (settings, advisory locks) carries over.
+- **Cancel** (or closing the tab) stops the query on the server with `pg_cancel_backend`.
+- It's **off for superuser connections**, which can reach the server's files and other databases through functions. `SQL_EDITOR=off` removes it completely.
+- The editor shows the first `SQL_MAX_ROWS` rows (1,000); long values are cut at 5,000 characters, like in the grid.
+
+Functions you call can still do things of their own, for example `dblink_exec` on a role allowed to use it. The [SELECT-only role](#use-it-with-your-own-database) remains the real guarantee.
 
 ## Security
 

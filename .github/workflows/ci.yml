@@ -66,6 +66,18 @@ jobs:
           DATABASE_URL: postgres://pgstudio_ro:demo_ro@127.0.0.1:5432/bookshop
           PORT: "4321"
       - run: npm run test:smoke
+      - name: SQL editor refuses superuser connections
+        env:
+          DATABASE_URL: postgres://postgres:demo_admin@127.0.0.1:5432/bookshop
+          PORT: "4322"
+        run: |
+          node dist/server.js > superuser.log 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:4322/api/meta >/dev/null && break; sleep 1; done
+          test "$(curl -sf http://127.0.0.1:4322/api/meta | jq -r '.capabilities.sql')" = "false"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H 'Origin: http://127.0.0.1:4322' -H 'X-PG-Studio: 1' --data '{"sql":"select 1"}' http://127.0.0.1:4322/api/sql)"
+          test "$code" = "403"
+          echo "Superuser connection: SQL editor off (HTTP $code)"
       - name: Server log
         if: always()
         run: cat server.log

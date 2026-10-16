@@ -98,6 +98,32 @@ check "foreign Host header is 403" "403" "$(status -H 'Host: evil.example' "${BA
 check "cross-origin POST is 403" "403" "$(status -X POST -H 'Origin: http://evil.example' "${BASE}/api/meta")"
 check "CSP header present" "1" "$(curl -sI "${BASE}/" | grep -ci '^content-security-policy:' || true)"
 
+# SQL editor: read queries only, one statement, never a write
+sql() {
+  local body
+  body="$(jq -nc --arg sql "$1" --arg mode "${2:-run}" '{sql: $sql, mode: $mode}')"
+  curl -s -X POST -H 'Content-Type: application/json' -H "Origin: ${BASE}" -H 'X-PG-Studio: 1' \
+    --data "$body" "${BASE}/api/sql"
+}
+check "sql: capability on for a read-only role" "true" "$(jq -r '.capabilities.sql' <<<"$meta")"
+check "sql: runs a query" "3" "$(sql 'select id from authors order by id limit 3;' | jq '.rows | length')"
+check "sql: values come back as text" '["1","a"]' "$(sql "values (1, 'a')" | jq -c '.rows[0]')"
+check "sql: duplicate column names kept" "2" "$(sql 'select 1 as a, 2 as a' | jq '.columns | length')"
+check "sql: row limit" "true" "$(sql 'select * from generate_series(1, 100000)' | jq '.limitHit and (.rows | length) == .rowLimit')"
+check "sql: explain returns a plan" "plan" "$(sql 'select count(*) from orders' explain | jq -r '.kind')"
+check "sql: explain analyze runs" "true" "$(sql 'select count(*) from orders' analyze | jq '.plan | contains("actual time")')"
+check "sql: two statements rejected" "true" "$(sql 'select 1; select 2' | jq '.error | test("one statement")')"
+check "sql: write hidden after COMMIT rejected" "true" "$(sql 'select 1) x; commit; delete from orders; select (1' | jq '.error | test("one statement")')"
+check "sql: DELETE rejected" "true" "$(sql 'delete from orders' | jq '.error | test("only runs read queries")')"
+check "sql: SET rejected" "true" "$(sql 'set statement_timeout = 0' | jq '.error | test("only runs read queries")')"
+check "sql: data-modifying WITH rejected" "true" "$(sql 'with d as (delete from orders returning *) select * from d' | jq '.error | test("top level")')"
+check "sql: read-only transaction" "true" "$(sql 'select * from orders for update' | jq '.error | test("read-only transaction")')"
+check "sql: error position points into the query" "14" "$(sql 'select * from no_such_table' | jq '.position')"
+check "sql: orders still all there" "true" "$(sql 'select count(*) > 0 as ok from orders' | jq -r '.rows[0][0] == "t"')"
+check "sql: cross-origin POST is 403" "403" "$(status -X POST -H 'Content-Type: application/json' -H 'Origin: http://evil.example' -H 'X-PG-Studio: 1' --data '{"sql":"select 1"}' "${BASE}/api/sql")"
+check "sql: non-JSON body is 400" "400" "$(status -X POST -H 'Content-Type: text/plain' -H "Origin: ${BASE}" -H 'X-PG-Studio: 1' --data 'select 1' "${BASE}/api/sql")"
+check "sql: export csv" "200" "$(status -X POST -H 'Content-Type: application/json' -H "Origin: ${BASE}" -H 'X-PG-Studio: 1' --data '{"sql":"select * from authors"}' "${BASE}/api/sql/export?format=csv")"
+
 if [[ $fail -ne 0 ]]; then
   echo "Smoke test failed."
   exit 1

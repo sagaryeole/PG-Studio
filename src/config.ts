@@ -41,6 +41,12 @@ export interface Config {
   readonly exportMaxRows: number;
   /** Max characters per cell in an export (higher than the grid's limit). */
   readonly exportCellCharLimit: number;
+  /** The SQL editor (read queries only). SQL_EDITOR=off removes it. */
+  readonly sqlEditor: boolean;
+  /** Statement timeout for queries typed in the SQL editor. */
+  readonly sqlTimeoutMs: number;
+  /** Max rows the SQL editor shows. */
+  readonly sqlMaxRows: number;
 }
 
 const MAX_CONNECTIONS = 50;
@@ -158,6 +164,14 @@ function loadConnections(): { connections: Connection[]; source: string } {
   return { connections, source: sources.join(" + ") };
 }
 
+function flagFromEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return fallback;
+  if (["1", "on", "true", "yes"].includes(raw)) return true;
+  if (["0", "off", "false", "no"].includes(raw)) return false;
+  throw new Error(`${name} must be on or off`);
+}
+
 export function loadConfig(): Config {
   const container = process.env["PG_STUDIO_CONTAINER"] === "1";
   const schema = (process.env["PG_SCHEMA"] ?? "public").trim() || "public";
@@ -176,5 +190,8 @@ export function loadConfig(): Config {
     cellCharLimit: 5000,
     exportMaxRows: intFromEnv("EXPORT_MAX_ROWS", 10_000, 1, 100_000),
     exportCellCharLimit: 100_000,
+    sqlEditor: flagFromEnv("SQL_EDITOR", true),
+    sqlTimeoutMs: intFromEnv("SQL_TIMEOUT_MS", 30_000, 100, 600_000),
+    sqlMaxRows: intFromEnv("SQL_MAX_ROWS", 1000, 1, 10_000),
   };
 }

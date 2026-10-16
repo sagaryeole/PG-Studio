@@ -27,6 +27,11 @@
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --radius: 6px;
   --radius-lg: 10px;
+  --tk-kw: #2f6496;
+  --tk-str: #2e7d32;
+  --tk-num: #b45309;
+  --tk-id: #7a3e9d;
+  --sql-sel: rgba(47, 100, 150, 0.22);
   color-scheme: light;
 }
 
@@ -53,6 +58,11 @@
     --info-bg: #1d2d42;
     --info-text: #c7dbf2;
     --shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+    --tk-kw: #8fb6e3;
+    --tk-str: #a5d6a7;
+    --tk-num: #f0b072;
+    --tk-id: #d4a8f0;
+    --sql-sel: rgba(143, 182, 227, 0.28);
     color-scheme: dark;
   }
 }
@@ -152,6 +162,9 @@ kbd {
   color: var(--muted);
   padding: 5px 8px 5px 12px;
 }
+.sql-btn { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.sql-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
 .badge {
   font-size: 12px;
   font-weight: 500;
@@ -858,6 +871,7 @@ dialog::backdrop { background: rgba(10, 14, 20, 0.35); }
 .fp-seg-btns button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); position: relative; }
 .fp-foot button[aria-pressed="true"].fp-sql-btn { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
+.fp-sql-actions { display: inline-flex; gap: 6px; flex-shrink: 0; }
 .fp-sql { border-top: 1px solid var(--line); padding-top: 8px; }
 .fp-sql-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .fp-sql pre {
@@ -878,3 +892,91 @@ dialog::backdrop { background: rgba(10, 14, 20, 0.35); }
   .fp-row input[type="text"] { grid-column: 2 / 4; grid-row: 2; }
   .fp-row .fp-x { grid-column: 4; grid-row: 1; }
 }
+
+/* ---- SQL editor --------------------------------------------------------------- */
+/* A transparent textarea over a <pre> that holds the coloured copy of its text. */
+
+.sql-editor {
+  position: relative;
+  flex-shrink: 0;
+  height: 190px;
+  min-height: 90px;
+  max-height: 70vh;
+  resize: vertical;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+}
+.sql-editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sql-code {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  font: 13px/1.6 var(--mono);
+  letter-spacing: 0;
+  white-space: pre;
+  tab-size: 2;
+  overflow: auto;
+}
+.sql-highlight { color: var(--text); pointer-events: none; overflow: hidden; }
+.sql-input {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  resize: none;
+  outline: none;
+  min-height: 0;
+  border-radius: var(--radius-lg);
+}
+.sql-input::placeholder { color: var(--muted); }
+.sql-input::selection { background: var(--sql-sel); color: transparent; }
+.tk-kw { color: var(--tk-kw); }
+.tk-str { color: var(--tk-str); }
+.tk-num { color: var(--tk-num); }
+.tk-id { color: var(--tk-id); }
+.tk-com { color: var(--muted); font-style: italic; }
+.tk-err { text-decoration: underline wavy var(--err-text); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+
+.sql-run { display: inline-flex; align-items: center; gap: 8px; }
+.sql-run kbd { background: transparent; color: inherit; border-color: currentColor; opacity: 0.75; padding: 2px 4px; }
+.sql-status { font-variant-numeric: tabular-nums; }
+
+.sql-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--err-bg);
+  color: var(--err-text);
+  font-size: 13px;
+}
+.sql-error strong { font-weight: 600; font-family: var(--mono); font-size: 12.5px; }
+.sql-error .link-btn { color: inherit; text-decoration: underline; }
+
+.sql-plan {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  font: 12.5px/1.55 var(--mono);
+  white-space: pre;
+}
+
+.grid .th-static { display: block; padding: 6px 10px; }
+.sql-plan.stale, .grid-wrap.stale { opacity: 0.45; }
+
+.sql-history { min-width: 360px; max-width: min(560px, 90vw); }
+.sql-history .hist-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 100%; }
+.sql-history .hist-sql { font: 12.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.sql-history .hist-meta { font-size: 11px; color: var(--muted); }

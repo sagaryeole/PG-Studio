@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         PG Studio deliberately stays small and read-only. Before proposing, have a look at the [roadmap](https://github.com/sagaryeole/PG-Studio/blob/main/ROADMAP.md),
-        including the "Not planned" section. Ideas that keep the safety rules (no SQL from the browser, identifiers from the catalog,
+        including the "Not planned" section. Ideas that keep the safety rules (only the read-only SQL editor takes SQL text, identifiers from the catalog,
         values as bind parameters, bounded reads) are the easiest to accept.
   - type: textarea
     id: problem

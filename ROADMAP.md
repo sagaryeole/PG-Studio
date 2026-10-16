@@ -1,8 +1,8 @@
 # Roadmap
 
-PG Studio aims to stay a small, safe, fast way to **look at** a PostgreSQL database. For general-purpose database work, such as running SQL, administration or schema design, tools like pgAdmin, DBeaver or TablePlus are a better fit, and PG Studio is happy to sit next to them.
+PG Studio aims to stay a small, safe, fast way to **look at** a PostgreSQL database. For general-purpose database work, such as writing data, administration or schema design, tools like pgAdmin, DBeaver or TablePlus are a better fit, and PG Studio is happy to sit next to them.
 
-**Guardrails for every item:** the browser never sends SQL, identifiers come from the catalog only, values are bind parameters, and anything that reads keeps the row limit and timeout.
+**Guardrails for every item:** only the read-only SQL editor takes SQL text, identifiers come from the catalog only, values are bind parameters, and anything that reads keeps the row limit and timeout.
 
 Ideas and votes are welcome in [issues](https://github.com/sagaryeole/PG-Studio/issues) and [discussions](https://github.com/sagaryeole/PG-Studio/discussions).
 
@@ -47,7 +47,7 @@ Ideas and votes are welcome in [issues](https://github.com/sagaryeole/PG-Studio/
 
 ## 🚫 Not planned
 
-- **SQL console.** It would need a SQL parser or a separate tightly limited role, and it's the feature most likely to expose data. Other tools do it well.
+- **Writing SQL.** The SQL editor runs read queries only and stays that way: no `INSERT`/`UPDATE`/`DELETE`, DDL or session commands.
 - **Adding connections from the browser.** It would mean accepting credentials over HTTP and storing them. Connections are edited in `connections.json` (passwords preferably in `~/.pgpass`).
 - **Running functions or procedures.** They can have side effects, which breaks the read-only promise. PG Studio shows their source only.
 - **Network or multi-user mode.** PG Studio has no authentication and binds to `127.0.0.1` on purpose.

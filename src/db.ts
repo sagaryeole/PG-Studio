@@ -9,8 +9,15 @@
  */
 import pg from "pg";
 
+export interface ReadOnlyOptions {
+  /** Overrides the pool's statement timeout for this transaction. */
+  timeoutMs?: number;
+  /** Close the connection afterwards instead of returning it to the pool (for SQL typed by the user). */
+  discard?: boolean;
+}
+
 export type Db = {
-  withReadOnly<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T>;
+  withReadOnly<T>(fn: (client: pg.PoolClient) => Promise<T>, options?: ReadOnlyOptions): Promise<T>;
   close(): Promise<void>;
 };
 
@@ -30,21 +37,23 @@ export function createDb(target: pg.PoolConfig, statementTimeoutMs: number, max 
   });
 
   return {
-    async withReadOnly<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    async withReadOnly<T>(fn: (client: pg.PoolClient) => Promise<T>, options: ReadOnlyOptions = {}): Promise<T> {
       const client = await pool.connect();
       try {
         // NOTE: READ ONLY is a guard rail, not a security boundary. A multi-statement
-        // string such as "COMMIT; DELETE ..." escapes it. That is why the app never
-        // runs request-derived SQL text and why a SELECT-only role is required.
+        // string such as "COMMIT; DELETE ..." escapes it. That is why the browse
+        // path never runs request-derived SQL text, why the SQL editor sends one
+        // statement only (sql.ts), and why a SELECT-only role is required.
         await client.query("BEGIN TRANSACTION READ ONLY");
         await client.query("SELECT set_config('statement_timeout', $1, true)", [
-          String(Math.trunc(statementTimeoutMs)),
+          String(Math.trunc(options.timeoutMs ?? statementTimeoutMs)),
         ]);
         return await fn(client);
       } finally {
         // Always roll back: nothing in the read path should ever commit.
         await client.query("ROLLBACK").catch(() => undefined);
-        client.release();
+        // A discarded connection takes any session state (advisory locks, settings) with it.
+        client.release(options.discard ? true : undefined);
       }
     },
     close: () => pool.end(),

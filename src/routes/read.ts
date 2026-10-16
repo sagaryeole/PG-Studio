@@ -104,8 +104,11 @@ export function readRoutes(config: Config, pools: Pools): Router {
       cellCharLimit: config.cellCharLimit,
       exportMaxRows: config.exportMaxRows,
       filterOps: FILTER_OPS,
+      sqlMaxRows: config.sqlMaxRows,
+      sqlTimeoutMs: config.sqlTimeoutMs,
       // Edit seam: the UI reads this to decide whether to show edit affordances.
-      capabilities: { edit: false },
+      // The SQL editor refuses superuser connections (see sql.ts).
+      capabilities: { edit: false, sql: config.sqlEditor && !role.isSuperuser },
     });
   });
 

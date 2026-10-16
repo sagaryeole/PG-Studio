@@ -39,6 +39,11 @@ It doesn't try to be a multi-user server. There's no authentication, so **don't 
 | Spreadsheet formula injection | CSV cells starting with `= + - @` (that aren't plain numbers) are prefixed with `'` | `=HYPERLINK(...)` exports as `'=HYPERLINK(...)`; `-18.5` stays a number |
 | Column-level permissions | Columns the role can't SELECT are left out. Tables it can't SELECT return 404 and aren't listed. | A revoked table returns 404 |
 | Read-only | `BEGIN READ ONLY` plus an unconditional `ROLLBACK`, **plus** the SELECT-only role | `DELETE` is rejected even as superuser (25006) |
+| SQL editor: one read statement | The text is sent over the extended protocol, which PostgreSQL refuses to run with more than one command, and always inside `SELECT * FROM (…) AS q LIMIT n`, so the top level is a `SELECT`. A scanner rejects other statement types early with a clear message. | `select 1; delete …`, `select 1) x; commit; delete …; select (1`, `SET …`, `DELETE …` and `WITH d AS (DELETE …) SELECT …` are all refused; `SELECT … FOR UPDATE` and `set_config('transaction_read_only', 'off', true)` fail read-only |
+| SQL editor: no lasting session state | Each query gets its own connection, which is closed afterwards (advisory locks, settings and prepared statements go with it), plus its own `SQL_TIMEOUT_MS` | |
+| SQL editor: not for superusers | Refused (403) when `is_superuser` is on, since superusers can reach server files and other databases through functions a read-only transaction allows. `SQL_EDITOR=off` removes the routes. | A superuser connection gets `capabilities.sql: false` and 403, checked in CI |
+| SQL editor: cancel | Closing the request (Cancel button, closed tab) runs `pg_cancel_backend` on the query's backend | `pg_sleep(20)` stops on Cancel |
+| SQL editor: links | A link can fill the editor (`#sql=…`) but never runs a query | |
 | Bounded reads | `LIMIT` ≤ 100 (fetches n+1 rows to detect a next page), integer-validated `page`, values cut to 5,000 chars inside PostgreSQL. Exports: ≤ `EXPORT_MAX_ROWS` rows, 100,000 chars per value. | Bad params return 400. Long values are flagged as cut. A 200k-row export stops at 10,000 and says so. |
 | Timeouts | `statement_timeout` set per transaction | `pg_sleep(2)` is cancelled at 300 ms |
 | Network exposure | Listens on `127.0.0.1` only; not configurable. The Docker image listens inside the container and must be published with `-p 127.0.0.1:…` | |
@@ -51,7 +56,7 @@ Several of these checks run on every push in CI. See [`scripts/smoke-test.sh`](s
 
 ## Why a SELECT-only role is required
 
-The app opens every query in a `READ ONLY` transaction, but that's a **guard rail, not a boundary**. A multi-statement string such as `COMMIT; DELETE ...` can escape it, which was confirmed against a superuser connection during testing. PG Studio never runs request-derived SQL text, so this can't be triggered through the UI or API today. Even so, the role's grants are what actually guarantee the database can't be changed.
+The app opens every query in a `READ ONLY` transaction, but that's a **guard rail, not a boundary**. A multi-statement string such as `COMMIT; DELETE ...` can escape it, which was confirmed against a superuser connection during testing. Browsing never runs SQL text from a request. The SQL editor does, which is why it sends one statement only, wraps it in a `SELECT` and refuses superusers (see the table above). Even so, functions the role may call can have side effects of their own (for example `dblink_exec` on a role allowed to use it), and only the role's grants guarantee the database can't be changed.
 
 If the configured role can write, the server prints a warning at startup and the UI shows a red badge. See [Quick start](README.md#use-it-with-your-own-database) for the `GRANT` statements.
 

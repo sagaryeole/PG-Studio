@@ -9,8 +9,8 @@
 
 ### A fast, read-only PostgreSQL browser that runs on your machine.
 
-Browse tables and views, filter and sort, follow foreign keys, and read table structure in a clean local web UI.<br>
-The browser never sends SQL, and every query runs in a read-only transaction with a timeout.
+Browse tables and views, filter and sort, follow foreign keys, read table structure, and run read-only SQL in a clean local web UI.<br>
+Every query runs in a read-only transaction with a timeout, and the SQL editor runs one read query at a time.
 
 [![CI](https://github.com/sagaryeole/PG-Studio/actions/workflows/ci.yml/badge.svg)](https://github.com/sagaryeole/PG-Studio/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2f6496.svg)](LICENSE)
@@ -35,10 +35,10 @@ Most PostgreSQL GUIs are full IDEs: connection managers, SQL editors, schema des
 
 PG Studio does one job: it lets you browse a PostgreSQL database quickly and safely.
 
-- **Read-only by design.** No SQL console, no write routes. Every query runs in a `READ ONLY` transaction that always rolls back, and the docs walk you through a SELECT-only role, which is the real guarantee.
+- **Read-only by design.** No write routes. The SQL editor runs one read query at a time, wrapped in a `SELECT`. Every query runs in a `READ ONLY` transaction that always rolls back, and the docs walk you through a SELECT-only role, which is the real guarantee.
 - **Local only.** It binds to `127.0.0.1`, checks the `Host` header against DNS rebinding, and sends a strict Content Security Policy. Nothing leaves your machine.
 - **Fast on big tables.** Keyset pagination makes page 9,000 as quick as page 1 (6 ms vs 1.2 s with `OFFSET` on a 1M-row table).
-- **Small and auditable.** About 2,200 lines of strict TypeScript on the server and a framework-free front end with no build step. Runtime dependencies: `express`, plus `pg` and `pg-connection-string` from node-postgres.
+- **Small and auditable.** About 2,900 lines of strict TypeScript on the server and a framework-free front end with no build step. Runtime dependencies: `express`, plus `pg` and `pg-connection-string` from node-postgres.
 
 ## Features
 
@@ -47,6 +47,7 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 | **Saved connections** | Name your servers in `connections.json` and switch between them from the top bar. Credentials stay on the server; the browser only sees names. |
 | **Every database on a server** | A database switcher lists each database the role may connect to, with its size. Each gets its own small pool, opened on first use. |
 | **Functions and procedures** | Browse functions, procedures and aggregates next to tables: signature, return type, language, volatility, `SECURITY DEFINER`, owner, full source, and the triggers that call them. View only; nothing is ever executed. |
+| **SQL editor (read-only)** | Press `q` and write a query: syntax colouring, <kbd>⌘</kbd><kbd>↵</kbd> runs it (or just the selected part), and errors point to the line and column. **Explain** and **Explain analyze** show the plan. Results open in the inspector and export to CSV/JSON. History stays in your browser. Only `SELECT`, `WITH`, `VALUES` and `TABLE` run, one statement at a time; a link with a query fills the editor but never runs it. |
 | **⌘K jump anywhere** | Fuzzy search across every schema's tables, views and functions. Recently opened tables come first. |
 | **Filter panel** | Stack up to 10 conditions (`=` `≠` `<` `≤` `>` `≥`, contains, starts/ends with, empty / has a value), match **all** or **any**, switch one off without deleting it, and preview the exact `SELECT` (read-only, copyable). Press `f` to open it; applied filters stay visible as chips. |
 | **Sort and filter from the header** | Each column header menu sorts, filters, or keeps only rows with / without a value. |
@@ -80,6 +81,10 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
   <tr>
     <td width="50%"><img src="docs/assets/screenshot-functions.png" alt="A plpgsql function with its signature, flags and source"><br><sub><b>Functions and procedures</b>: signature, flags and source</sub></td>
     <td width="50%"><img src="docs/assets/screenshot-databases.png" alt="Database menu listing analytics, bookshop and postgres with sizes"><br><sub><b>Connection / database / schema</b> switcher</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshot-sql.png" alt="SQL editor with a query grouped by genre and its results"><br><sub><b>SQL editor</b>: read queries only, typed results</sub></td>
+    <td width="50%"><img src="docs/assets/screenshot-explain.png" alt="Explain analyze output with actual times and buffers"><br><sub><b>Explain analyze</b> with real timings and buffers</sub></td>
   </tr>
 </table>
 
@@ -201,6 +206,9 @@ All configuration is through environment variables (`.env`):
 | `PG_SCHEMA` | `public` | Schema shown first (a connection's `"schema"` overrides it). Any schema the role has `USAGE` on can be picked from the top bar. |
 | `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. Exports use it too. |
 | `EXPORT_MAX_ROWS` | `10000` | Max rows in one CSV/JSON export (max 100,000). |
+| `SQL_EDITOR` | `on` | `off` removes the SQL editor and its API. It's always off for superuser connections. |
+| `SQL_TIMEOUT_MS` | `30000` | Timeout for queries run in the SQL editor (max 10 minutes). |
+| `SQL_MAX_ROWS` | `1000` | Rows the SQL editor shows (max 10,000). Its export goes up to `EXPORT_MAX_ROWS`. |
 | `PG_STUDIO_CONTAINER` | (unset) | Set by the official Docker image only: listen on all interfaces inside the container and accept any published port on `127.0.0.1`/`localhost`. Don't set it anywhere else. |
 
 ### Several servers or databases
@@ -240,6 +248,8 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 |---|---|
 | <kbd>⌘</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>K</kbd> | Jump to a table or view |
 | <kbd>/</kbd> | Search the open table |
+| <kbd>Q</kbd> | Open the SQL editor |
+| <kbd>⌘</kbd> <kbd>↵</kbd> | Run the query, or just the selected part |
 | <kbd>F</kbd> | Open or close the filter panel (<kbd>Enter</kbd> applies) |
 | <kbd>←</kbd> <kbd>↑</kbd> <kbd>→</kbd> <kbd>↓</kbd> | Move between cells |
 | <kbd>Enter</kbd> | Open the row in the side panel |
@@ -252,7 +262,8 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 
 PG Studio is built to be safe to point at a real database:
 
-- **No SQL from the browser.** No endpoint accepts SQL. Table and column names are resolved against `pg_catalog` and quoted with `pg.escapeIdentifier`; operators come from a fixed list; every value is a bind parameter.
+- **No SQL built from requests.** Browsing never takes SQL text: table and column names are resolved against `pg_catalog` and quoted with `pg.escapeIdentifier`, operators come from a fixed list, and every value is a bind parameter.
+- **A fenced-in SQL editor.** Its query is sent as a single statement (PostgreSQL refuses more than one on that protocol) inside `SELECT * FROM (…) LIMIT n`, so `SET`, `COMMIT`, `DELETE` or a data-modifying `WITH` can't run. It uses its own connection, closed afterwards, and is off for superusers. Set `SQL_EDITOR=off` to remove it.
 - **Read-only twice over.** `BEGIN READ ONLY` plus a mandatory `ROLLBACK`, *and* a SELECT-only role (the real boundary).
 - **Bounded reads.** Page size ≤ 100, cells cut to 5,000 characters inside PostgreSQL, a per-query `statement_timeout`, and capped exports.
 - **Localhost hardening.** Binds to `127.0.0.1` (in the Docker image, publish with `-p 127.0.0.1:…`), `Host` header allow-list against DNS rebinding, same-origin guard for any future writes, and a strict CSP with no inline script or style.
@@ -268,13 +279,14 @@ PG Studio isn't a replacement for a full database IDE. It's the small, safe tool
 | | PG Studio | pgAdmin | DBeaver / DataGrip | TablePlus |
 |---|---|---|---|---|
 | Focus | Browsing data | Administration | Full SQL IDE | Native GUI client |
-| Writes or SQL editor | No (by design) | Yes | Yes | Yes |
+| Writes | No (by design) | Yes | Yes | Yes |
+| SQL editor | Read queries only | Yes | Yes | Yes |
 | Install | `npm install` | Desktop or server | Desktop (Java) | Desktop |
 | Runs in | Your browser, on localhost | Desktop or web | Desktop | Desktop |
 | License | Apache 2.0 | PostgreSQL | Apache 2 / commercial | Commercial |
-| Size of codebase to audit | ~5.8k lines | Large | Large | Closed source |
+| Size of codebase to audit | ~7.3k lines | Large | Large | Closed source |
 
-For running ad-hoc SQL, managing roles or designing schemas, use one of the others.
+For writing data, managing roles or designing schemas, use one of the others.
 
 ## Documentation
 

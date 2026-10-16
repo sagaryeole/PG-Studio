@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- SQL editor for read queries (press `q`): syntax colouring, run with ⌘↵ (or just the selected part), errors with line and column, **Explain** and **Explain analyze**, results in the grid and inspector, CSV/JSON export, history in the browser, and **Open in SQL editor** from the filter panel's SQL preview. A link can fill the editor (`#sql=…`) but never runs it.
+- The editor's guards: one statement over the extended protocol, always inside `SELECT * FROM (…) LIMIT n`, in a read-only transaction on a connection that is closed afterwards; refused for superuser connections; the query is cancelled on the server when the browser cancels it. `SQL_EDITOR=off` removes it; `SQL_TIMEOUT_MS` (30 s) and `SQL_MAX_ROWS` (1,000) set its limits.
+- `POST /api/sql` and `POST /api/sql/export`, and `capabilities.sql`, `sqlMaxRows` and `sqlTimeoutMs` in `/api/meta`.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

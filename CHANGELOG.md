@@ -7,7 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Saved connections in `connections.json` (or `DATABASE_URL` as before), with a connection / database / schema switcher in the top bar. Credentials never reach the browser.
+- Every database on a server: a database menu lists those the role may connect to, each opened with its own small pool on first use.
+- Functions, procedures and aggregates in the sidebar and ⌘K, with signature, flags (`SECURITY DEFINER`, volatility…), owner, source and the triggers that use them. View only.
+- Filter panel: several conditions at once, match all / any (`match=any`), conditions you can switch off, and a read-only SQL preview (`/tables/:name/sql`). Press `f`.
 - Demo database (`npm run demo:db`, `npm run demo`) with ~430k rows of generated bookshop data.
+- Demo `analytics` database, two saved demo connections, and example functions, a procedure, a trigger and an aggregate.
 - End-to-end smoke test (`npm run test:smoke`) covering the API and security controls.
 - CI on Node 20, 22 and 24, with smoke tests against PostgreSQL 14, 15, 16 and 17.
 - Open-source project files: contributing guide, code of conduct, security policy, issue and PR templates, roadmap, and a project website.

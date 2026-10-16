@@ -142,7 +142,7 @@
       </div>
       <p class="meta">Free and open source · Apache-2.0 license · PostgreSQL 14–17 · Node.js 20.6+</p>
       <div class="demo">
-        <img src="assets/demo.gif" width="1200" height="717" alt="PG Studio demo: jump to a table, filter and sort rows, open a row, follow a foreign key and view the table structure">
+        <img src="assets/demo.gif" width="1200" height="717" alt="PG Studio demo: jump to a table with Cmd+K, build OR filters and preview their SQL, open a row in the side panel, read a function's source, switch to another database, dark mode">
       </div>
     </div>
 
@@ -151,14 +151,16 @@
         <h2>Everything you need to look at your data</h2>
         <p class="sub">And nothing that can change it. PG Studio does one job well: lets you explore a PostgreSQL database quickly and safely.</p>
         <div class="grid">
-          <div class="card"><h3>⌘K jump to table</h3><p>Fuzzy search across every schema, with recently opened tables first.</p></div>
-          <div class="card"><h3>Sort, filter, search</h3><p>Server-side sorting, filter chips with 12 operators, and search across text columns.</p></div>
+          <div class="card"><h3>Every server, every database</h3><p>Saved connections and a database switcher in the top bar. Credentials never reach the browser.</p></div>
+          <div class="card"><h3>Functions and procedures</h3><p>Signatures, flags, full source and the triggers that call them. Shown, never run.</p></div>
+          <div class="card"><h3>⌘K jump anywhere</h3><p>Fuzzy search across every schema's tables, views and functions, recent ones first.</p></div>
+          <div class="card"><h3>Filter panel</h3><p>Stack conditions, match all or any, switch one off, and preview the exact SQL. All server-side.</p></div>
           <div class="card"><h3>Follow foreign keys</h3><p>Jump to the referenced row, see the rows that point back, and use Back to return.</p></div>
           <div class="card"><h3>Row inspector</h3><p>Full values with pretty-printed JSON, plus every field of the row in a side panel.</p></div>
           <div class="card"><h3>Structure tab</h3><p>Sizes, stats, indexes and usage, constraints, triggers, and a generated <code>CREATE</code> script.</p></div>
           <div class="card"><h3>Fast deep paging</h3><p>Keyset pagination: page 9,000 is as fast as page 1. 6 ms vs 1.2 s with OFFSET on 1M rows.</p></div>
           <div class="card"><h3>CSV and JSON export</h3><p>Export the current view with its filters and sort, with formula-injection protection.</p></div>
-          <div class="card"><h3>Shareable URLs</h3><p>Schema, table, filters, sort, page and tab live in the URL. Bookmark any view.</p></div>
+          <div class="card"><h3>Shareable URLs</h3><p>Connection, database, table, filters, sort, page and tab live in the URL. Bookmark any view.</p></div>
           <div class="card"><h3>Keyboard first, dark mode</h3><p>Arrow keys, Enter, <code>/</code>, <code>[</code> <code>]</code> and <code>?</code>. Follows your OS theme.</p></div>
         </div>
       </div>
@@ -169,7 +171,7 @@
         <h2>See it in action</h2>
         <p class="sub">Screenshots use the bundled demo database. All data is generated.</p>
         <div class="shots">
-          <figure><img src="assets/screenshot-filters.png" width="1440" height="860" loading="lazy" alt="Orders table filtered by status and total, sorted by date"><figcaption>Filter chips and sorting</figcaption></figure>
+          <figure><img src="assets/screenshot-filters.png" width="1440" height="860" loading="lazy" alt="Filter panel with three conditions, match any, and the SQL preview"><figcaption>Filter panel with SQL preview</figcaption></figure>
           <figure><img src="assets/screenshot-inspector.png" width="1440" height="860" loading="lazy" alt="Row inspector showing pretty-printed JSONB and foreign-key links"><figcaption>Row inspector with JSONB and relationships</figcaption></figure>
           <figure><img src="assets/screenshot-structure.png" width="1440" height="860" loading="lazy" alt="Structure tab with sizes, stats, columns and indexes"><figcaption>Structure tab</figcaption></figure>
           <figure><img src="assets/screenshot-dark.png" width="1440" height="860" loading="lazy" alt="PG Studio in dark mode"><figcaption>Dark mode</figcaption></figure>

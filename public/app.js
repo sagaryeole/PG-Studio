@@ -25,12 +25,19 @@ const KIND_LABEL = { view: "view", matview: "materialized view", partitioned: "p
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
 const state = {
+  connections: [], // saved connections (names only; credentials stay on the server)
+  databases: [], // databases on the current connection's server
+  /** { conn, db, defaultDb }: what every API call is scoped to. db null = the connection's own. */
+  scope: null,
   meta: null,
   schemas: [],
   tablesSchema: null, // schema the sidebar list was loaded for
   tables: [],
   allTables: null, // every relation in every schema, for the jump dialog
-  /** { schema, name, page, pageSize, sort, filters, q, cursor: {dir, value} | null } */
+  routines: [], // functions, procedures and aggregates of tablesSchema (best effort)
+  allRoutines: null, // same, across schemas, for the jump dialog
+  routine: null, // { oid, schema, detail } while a routine is open
+  /** { schema, name, page, pageSize, sort, filters: [{c, op, v?, off?}], match: "all"|"any", q, cursor: {dir, value} | null } */
   current: null,
   tab: "data", // "data" | "details"
   data: null, // last /api/tables/:name response
@@ -38,7 +45,11 @@ const state = {
   selected: null, // { r, c } selected cell (c = index into table.columns)
   seq: 0, // guards against out-of-order responses
   countSeq: 0,
-  editingFilter: -1,
+  panelOpen: false, // filter panel visible
+  draft: null, // { match, rows: [{on, c, op, v}] } while the panel is open
+  sqlOpen: false, // SQL preview shown in the panel
+  sqlSeq: 0,
+  sql: "",
   prefs: null, // column prefs for the current table
   jumpItems: [],
   pendingError: null, // shown once the next table load succeeds
@@ -47,8 +58,18 @@ const state = {
 
 // ---- Utilities ---------------------------------------------------------
 
+/** Add the current connection and database to an API path. */
+function scoped(path) {
+  if (!state.scope) return path;
+  const [p, q = ""] = path.split("?");
+  const params = new URLSearchParams(q);
+  params.set("conn", state.scope.conn);
+  if (state.scope.db) params.set("db", state.scope.db);
+  return `${p}?${params}`;
+}
+
 async function api(path) {
-  const res = await fetch(`/api${path}`, { headers: { Accept: "application/json" } });
+  const res = await fetch(`/api${scoped(path)}`, { headers: { Accept: "application/json" } });
   let body = null;
   try {
     body = await res.json();
@@ -134,7 +155,10 @@ function viewQuery(cur, extra = {}) {
     p.set("sort", cur.sort.column);
     p.set("dir", cur.sort.dir);
   }
-  if (cur.filters.length) p.set("filters", JSON.stringify(cur.filters));
+  // Switched-off filters stay in the view state but never reach the server.
+  const active = cur.filters.filter((f) => !f.off).map(({ c, op, v }) => (v === undefined ? { c, op } : { c, op, v }));
+  if (active.length) p.set("filters", JSON.stringify(active));
+  if (cur.match === "any") p.set("match", "any");
   if (cur.q) p.set("q", cur.q);
   return p;
 }
@@ -171,8 +195,19 @@ function storageSet(key, value) {
   }
 }
 
+/** True for the first connection's own database: its keys and URLs stay as before. */
+function isDefaultScope() {
+  const s = state.scope;
+  return !s || (s.conn === state.connections[0]?.id && (!s.db || s.db === s.defaultDb));
+}
+
+/** localStorage key, namespaced per connection and database. */
+function skey(name) {
+  return isDefaultScope() ? `pgstudio:${name}` : `pgstudio:${state.scope.conn}/${state.scope.db}:${name}`;
+}
+
 function loadPrefs(schema, table) {
-  const p = storageGet(`pgstudio:cols:${schema}.${table}`, null);
+  const p = storageGet(skey(`cols:${schema}.${table}`), null);
   return {
     widths: p && typeof p.widths === "object" && p.widths ? p.widths : {},
     hidden: Array.isArray(p?.hidden) ? p.hidden : [],
@@ -181,24 +216,27 @@ function loadPrefs(schema, table) {
 }
 
 function savePrefs() {
-  if (state.current && state.prefs) storageSet(`pgstudio:cols:${state.current.schema}.${state.current.name}`, state.prefs);
+  if (state.current && state.prefs) storageSet(skey(`cols:${state.current.schema}.${state.current.name}`), state.prefs);
 }
 
 function rememberRecent(schema, name) {
-  const list = storageGet("pgstudio:recent", []).filter(
+  const list = storageGet(skey("recent"), []).filter(
     (r) => r && typeof r.name === "string" && !(r.schema === schema && r.name === name),
   );
   list.unshift({ schema, name });
-  storageSet("pgstudio:recent", list.slice(0, 6));
+  storageSet(skey("recent"), list.slice(0, 6));
 }
 
 // ---- URL hash state ----------------------------------------------------
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
+  const conn = p.get("c") || state.connections[0]?.id || null;
+  const db = p.get("db") || null;
   const name = p.get("t");
   const schema = p.get("sc") || state.meta?.schema || "public";
-  if (!name) return { schema, name: null };
+  const fn = /^\d{1,10}$/.test(p.get("fn") || "") ? p.get("fn") : null;
+  if (!name) return { conn, db, schema, name: null, fn };
   const page = Math.max(1, parseInt(p.get("p") || "1", 10) || 1);
   const size = parseInt(p.get("n") || "", 10);
   const pageSize = [25, 50, 100].includes(size) ? size : state.meta?.pageSizeDefault ?? 50;
@@ -207,7 +245,11 @@ function readHash() {
   let filters = [];
   try {
     const f = JSON.parse(p.get("f") || "[]");
-    if (Array.isArray(f)) filters = f.filter((x) => x && typeof x.c === "string" && typeof x.op === "string");
+    if (Array.isArray(f)) {
+      filters = f
+        .filter((x) => x && typeof x.c === "string" && typeof x.op === "string")
+        .map((x) => ({ c: x.c, op: x.op, ...(typeof x.v === "string" ? { v: x.v } : {}), ...(x.off === true ? { off: true } : {}) }));
+    }
   } catch {
     /* ignore a bad hash */
   }
@@ -215,16 +257,43 @@ function readHash() {
   const b = p.get("b");
   const cursor = a ? { dir: "after", value: a } : b ? { dir: "before", value: b } : null;
   return {
-    view: { schema, name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, q: p.get("q") || "", cursor },
+    view: { schema, name, page, pageSize, sort: s ? { column: s, dir: d } : null, filters, match: p.get("m") === "any" ? "any" : "all", q: p.get("q") || "", cursor },
     tab: p.get("v") === "details" ? "details" : "data",
+    conn,
+    db,
     schema,
     name,
   };
 }
 
-function writeHash(cur, push) {
+/** True when a parsed hash points at a different connection or database than the one loaded. */
+function scopeChanged(h) {
+  const s = state.scope;
+  if (!s) return true;
+  return h.conn !== s.conn || (h.db || s.defaultDb) !== s.db;
+}
+
+/** Hash params for the scope; empty for the default one so old links keep working. */
+function scopeParams() {
   const p = new URLSearchParams();
-  if (cur.schema !== state.meta.schema) p.set("sc", cur.schema);
+  const s = state.scope;
+  if (!s) return p;
+  if (s.conn !== state.connections[0]?.id) p.set("c", s.conn);
+  if (s.db && s.db !== s.defaultDb) p.set("db", s.db);
+  return p;
+}
+
+function writeHomeHash(push) {
+  const p = scopeParams().toString();
+  if (location.hash === (p ? `#${p}` : "")) return;
+  const next = p ? `#${p}` : location.pathname + location.search;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
+
+function writeHash(cur, push) {
+  const p = scopeParams();
+  if (cur.schema !== state.meta?.schema) p.set("sc", cur.schema);
   p.set("t", cur.name);
   if (cur.page > 1) p.set("p", String(cur.page));
   if (cur.pageSize !== state.meta.pageSizeDefault) p.set("n", String(cur.pageSize));
@@ -233,6 +302,7 @@ function writeHash(cur, push) {
     p.set("d", cur.sort.dir);
   }
   if (cur.filters.length) p.set("f", JSON.stringify(cur.filters));
+  if (cur.match === "any") p.set("m", "any");
   if (cur.q) p.set("q", cur.q);
   if (cur.cursor) p.set(cur.cursor.dir === "after" ? "a" : "b", cur.cursor.value);
   if (state.tab === "details") p.set("v", "details");
@@ -242,24 +312,236 @@ function writeHash(cur, push) {
   else history.replaceState(null, "", next);
 }
 
-// ---- Schemas, sidebar, home --------------------------------------------
+/** Routine views are addressed by oid: #fn=<oid>, plus sc=<schema> when not the default. */
+function writeRoutineHash(schema, oid, push) {
+  const p = scopeParams();
+  if (schema !== state.meta?.schema) p.set("sc", schema);
+  p.set("fn", oid);
+  const next = `#${p.toString()}`;
+  if (location.hash === next) return;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
 
-function renderSchemaSelect() {
-  const sel = $("schema-select");
-  sel.replaceChildren(
-    ...state.schemas.map((s) => el("option", { value: s.name, text: `${s.name}  (${s.relations})` })),
+// ---- Connection / database / schema switcher ----------------------------
+
+const SCOPE_MENUS = [
+  ["conn-btn", "conn-menu"],
+  ["db-btn", "db-menu"],
+  ["schema-btn", "schema-menu"],
+];
+
+function connLabel(c) {
+  return [c.user, c.host && `${c.host}${c.port ? `:${c.port}` : ""}`].filter(Boolean).join("@");
+}
+
+function renderScope() {
+  const s = state.scope;
+  const conn = state.connections.find((c) => c.id === s?.conn);
+  $("conn-label").textContent = conn?.name ?? "—";
+  $("conn-btn").title = conn ? `Connection: ${conn.name} (${connLabel(conn)})` : "";
+  $("db-label").textContent = s?.db ?? s?.defaultDb ?? "—";
+  $("db-btn").title = "Database";
+  $("schema-label").textContent = state.tablesSchema ?? "—";
+  $("schema-btn").title = "Schema";
+  $("schema-btn").disabled = !state.schemas.length;
+  // Until the connection answers there's no database or schema to show.
+  document.querySelector(".scope").classList.toggle("offline", !state.meta);
+}
+
+/** One popover menu with an optional filter box once it gets long. */
+function renderScopeMenu(menuId, items, current, onPick, footer) {
+  const menu = $(menuId);
+  const list = el("div", { class: "menu-list scope-list", role: "menu" });
+  const paint = (q) => {
+    list.replaceChildren(
+      ...items
+        .filter((it) => !q || it.label.toLowerCase().includes(q))
+        .map((it) =>
+          el(
+            "button",
+            {
+              type: "button",
+              class: "menu-item scope-item",
+              role: "menuitemradio",
+              "aria-checked": String(it.value === current),
+              onclick: () => {
+                closeMenus();
+                if (it.value !== current) onPick(it.value);
+              },
+            },
+            el("span", { class: "scope-check", text: it.value === current ? "✓" : "" }),
+            el("span", { class: "scope-name" }, el("span", { text: it.label }), it.sub ? el("span", { class: "scope-sub", text: it.sub }) : null),
+            el("span", { class: "scope-meta", text: it.meta ?? "" }),
+          ),
+        ),
+    );
+    if (!list.children.length) list.append(el("p", { class: "small muted", text: "No matches" }));
+  };
+  menu.replaceChildren();
+  if (items.length > 8) {
+    const input = el("input", { type: "search", class: "scope-filter", placeholder: "Filter", "aria-label": "Filter", spellcheck: "false" });
+    input.addEventListener("input", () => paint(input.value.trim().toLowerCase()));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") list.querySelector("button")?.click();
+    });
+    menu.append(input);
+    queueMicrotask(() => input.focus());
+  }
+  paint("");
+  menu.append(list);
+  if (footer) menu.append(el("hr"), el("p", { class: "small muted", text: footer }));
+}
+
+function openConnMenu() {
+  renderScopeMenu(
+    "conn-menu",
+    state.connections.map((c) => ({ value: c.id, label: c.name, sub: connLabel(c) })),
+    state.scope?.conn,
+    (id) => enterScope(id, null, null, { push: true }),
+    "Saved connections live in connections.json next to the app.",
   );
-  if (state.tablesSchema) sel.value = state.tablesSchema;
-  sel.disabled = state.schemas.length <= 1;
+}
+
+function openDbMenu() {
+  renderScopeMenu(
+    "db-menu",
+    state.databases.map((d) => ({ value: d.name, label: d.name, meta: d.sizeBytes === null ? "" : fmtBytes(d.sizeBytes) })),
+    state.scope?.db,
+    (name) => enterScope(state.scope.conn, name, null, { push: true }),
+    state.databases.length ? null : "No other databases this role can connect to.",
+  );
+}
+
+function openSchemaMenu() {
+  renderScopeMenu(
+    "schema-menu",
+    state.schemas.map((x) => ({ value: x.name, label: x.name, meta: String(x.relations) })),
+    state.tablesSchema,
+    async (name) => {
+      showError("");
+      try {
+        $("filter").value = "";
+        await loadTables(name);
+      } catch (err) {
+        showError(err.message);
+      }
+    },
+  );
+}
+
+function applyMode() {
+  const mode = $("mode");
+  const m = state.meta;
+  mode.classList.remove("danger");
+  if (!m) {
+    mode.textContent = "Not connected";
+    mode.title = "";
+    return;
+  }
+  mode.textContent = m.capabilities.edit ? "Editing on" : "Read-only";
+  if (m.role.canWrite) {
+    mode.classList.add("danger");
+    mode.textContent = "Read-only app, but this role can write";
+    mode.title =
+      `Connected as "${m.role.name}", which can change data. ` +
+      "The app only reads, but use a SELECT-only role so that doesn't depend on the code being bug-free.";
+  } else {
+    mode.title = `Connected as "${m.role.name}", which can only read. All queries run in read-only transactions.`;
+  }
+}
+
+/** Show the empty state for the loaded scope: no table open. */
+function showHome() {
+  state.current = null;
+  state.data = null;
+  state.routine = null;
+  $("view").hidden = true;
+  $("routine").hidden = true;
+  $("empty").hidden = false;
+  closeInspector();
+  renderTables();
+  renderHome();
+  document.title = "PG Studio";
+}
+
+/**
+ * Switch to a connection and database (db null = the connection's own), load
+ * its schemas and tables, then open `h` (a parsed hash) if given, else go home.
+ */
+async function enterScope(conn, db, h, { push = false } = {}) {
+  const seq = ++state.seq;
+  closeMenus();
+  closeInspector();
+  showError("");
+  showNotice("");
+  const prevDefault = state.scope?.conn === conn ? state.scope.defaultDb : null;
+  state.scope = { conn, db, defaultDb: prevDefault };
+  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], routines: [], allRoutines: null, tablesSchema: null, allTables: null, current: null, data: null, details: null, routine: null });
+  $("view").hidden = true;
+  $("routine").hidden = true;
+  $("empty").hidden = false;
+  $("empty").replaceChildren();
+  renderScope();
+  renderTables();
+  setBusy(true);
+  try {
+    const [meta, { schemas }, dbs] = await Promise.all([api("/meta"), api("/schemas"), api("/databases")]);
+    if (seq !== state.seq) return;
+    Object.assign(state.scope, { db: meta.database, defaultDb: dbs.default });
+    Object.assign(state, { meta, schemas, databases: dbs.databases });
+    applyMode();
+    const startSchema = h && schemas.some((s) => s.name === h.schema) ? h.schema : meta.schema;
+    await loadTables(startSchema);
+    if (seq !== state.seq) return;
+    renderScope();
+    if (h?.fn && !h.name) {
+      openRoutine(h.fn, startSchema);
+    } else if (h?.name) {
+      state.tab = h.tab;
+      openTable({ ...h.view, schema: startSchema });
+    } else {
+      showHome();
+      writeHomeHash(push);
+    }
+  } catch (err) {
+    if (seq !== state.seq) return;
+    applyMode();
+    renderScope();
+    $("tables-status").textContent = "";
+    // A bad database in a link: fall back to the connection's own database.
+    if (db && /Database not found/.test(err.message)) {
+      state.pendingError = null;
+      await enterScope(conn, null, null);
+      showError(`There's no database called "${db}" that this role can connect to, so the default one is open.`);
+      return;
+    }
+    const conn_ = state.connections.find((c) => c.id === conn);
+    showError(`Couldn't open ${conn_ ? `"${conn_.name}"` : "the connection"}${db ? ` / ${db}` : ""}: ${err.message}`);
+    $("empty").replaceChildren(
+      el("h1", { text: "Not connected" }),
+      el("p", { class: "muted", text: "Check that the server is running and the connection details are right, or pick another connection above." }),
+    );
+  } finally {
+    if (seq === state.seq) setBusy(false);
+  }
 }
 
 async function loadTables(schema) {
+  // Routines load in parallel and never block (or break) the table list.
+  const routinesReq = api(`/routines?${new URLSearchParams({ schema })}`).then((r) => r.routines, () => []);
   const { tables } = await api(`/tables?${new URLSearchParams({ schema })}`);
   state.tables = tables;
+  state.routines = [];
   state.tablesSchema = schema;
-  $("schema-select").value = schema;
+  renderScope();
   renderTables();
   if (!state.current) renderHome();
+  routinesReq.then((routines) => {
+    if (state.tablesSchema !== schema) return;
+    state.routines = routines;
+    renderTables();
+  });
 }
 
 function renderTables() {
@@ -293,12 +575,48 @@ function renderTables() {
     }
     nav.append(el("h3", { text: `${label} (${items.length})` }), ul);
   }
+  const routinesShown = renderRoutineGroups(nav, filter);
   $("tables-status").textContent =
-    state.tables.length === 0
+    state.tables.length === 0 && state.routines.length === 0
       ? "Nothing readable in this schema. Check the role's grants."
-      : filter && shown.length === 0
+      : filter && shown.length === 0 && routinesShown === 0
         ? `Nothing matches "${$("filter").value.trim()}".`
         : "";
+}
+
+/** "2 args" style hint that tells overloads of one name apart. */
+function argHint(args) {
+  const n = args.trim() ? args.split(",").length : 0;
+  return n === 0 ? "no args" : plural(n, "arg");
+}
+
+/** Functions and Procedures groups for the sidebar. Returns how many items match the filter. */
+function renderRoutineGroups(nav, filter) {
+  const shown = state.routines.filter((r) => r.name.toLowerCase().includes(filter));
+  const overloaded = new Map();
+  for (const r of state.routines) overloaded.set(r.name, (overloaded.get(r.name) ?? 0) + 1);
+  const groups = [
+    ["Functions", shown.filter((r) => r.kind !== "procedure")],
+    ["Procedures", shown.filter((r) => r.kind === "procedure")],
+  ];
+  for (const [label, items] of groups) {
+    if (!items.length) continue;
+    const ul = el("ul");
+    for (const r of items) {
+      const tag = { aggregate: "agg.", window: "win." }[r.kind];
+      const btn = el(
+        "button",
+        { type: "button", title: `${r.name}(${r.args})` },
+        el("span", { class: "tname" }, r.name, tag ? el("span", { class: "kind", text: tag }) : null),
+        el("span", { class: "tcount", text: overloaded.get(r.name) > 1 ? argHint(r.args) : "" }),
+      );
+      if (state.routine?.oid === r.oid) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", () => openRoutine(r.oid, state.tablesSchema, { push: true }));
+      ul.append(el("li", {}, btn));
+    }
+    nav.append(el("h3", { text: `${label} (${items.length})` }), ul);
+  }
+  return shown.length;
 }
 
 function renderHome() {
@@ -327,7 +645,7 @@ function renderHome() {
       }),
     );
 
-  const recent = storageGet("pgstudio:recent", []).filter((r) => r && typeof r.name === "string");
+  const recent = storageGet(skey("recent"), []).filter((r) => r && typeof r.name === "string");
   const known = new Map(tables.map((t) => [t.name, t]));
   const recentHere = recent
     .map((r) => (r.schema === schema ? known.get(r.name) && { t: known.get(r.name), s: r.schema } : { t: { name: r.name, kind: "table", estimatedRows: null }, s: r.schema }))
@@ -369,6 +687,7 @@ function freshView(name, filters = [], schema = state.current?.schema ?? state.m
     pageSize: state.current?.pageSize ?? state.meta.pageSizeDefault,
     sort: null,
     filters,
+    match: "all",
     q: "",
     cursor: null,
   };
@@ -381,13 +700,16 @@ async function openTable(cur, { push = false } = {}) {
   const prev = state.current;
   const tableChanged = !prev || prev.name !== cur.name || prev.schema !== cur.schema;
   state.current = cur;
+  state.routine = null; // the routine section is hidden once the table renders
   if (tableChanged) {
     state.prefs = loadPrefs(cur.schema, cur.name);
     state.details = null;
     state.selected = null;
-    hideFilterForm();
+    closePanel();
     showNotice("");
     rememberRecent(cur.schema, cur.name);
+  } else if (JSON.stringify([prev.filters, prev.match]) !== JSON.stringify([cur.filters, cur.match])) {
+    syncPanelWithApplied();
   }
   state.selected = null;
   resetCount();
@@ -430,7 +752,7 @@ async function openTable(cur, { push = false } = {}) {
     // and say why, so the user isn't stuck on the home page.
     if (!sameTable && (cur.filters.length || cur.q || cur.sort || cur.cursor)) {
       state.pendingError = `Couldn't apply the saved filters, search or sort (${err.message}), so the table is shown without them.`;
-      openTable({ ...cur, filters: [], q: "", sort: null, cursor: null, page: 1 });
+      openTable({ ...cur, filters: [], match: "all", q: "", sort: null, cursor: null, page: 1 });
       return;
     }
     // Keep the toolbar usable so a bad filter can be removed.
@@ -440,6 +762,7 @@ async function openTable(cur, { push = false } = {}) {
     } else {
       state.data = null;
       $("view").hidden = true;
+      $("routine").hidden = true;
       $("empty").hidden = false;
       renderHome();
     }
@@ -516,6 +839,7 @@ function renderView() {
   const cur = state.current;
 
   $("empty").hidden = true;
+  $("routine").hidden = true;
   $("view").hidden = false;
   const h1 = $("title");
   h1.replaceChildren();
@@ -571,6 +895,7 @@ function renderView() {
   $("export-note").textContent = `Exports what you see: same sort, filters and search, up to ${state.meta.exportMaxRows.toLocaleString()} rows.`;
 
   renderChips();
+  refreshSql();
   renderGrid();
   applyTab();
 }
@@ -640,7 +965,7 @@ function renderGrid() {
     if (d.filtered) {
       td.append(
         "No rows match the current filters and search.",
-        el("button", { type: "button", text: "Clear filters", onclick: () => reload({ filters: [], q: "", page: 1 }) }),
+        el("button", { type: "button", text: "Clear filters", onclick: () => reload({ filters: [], match: "all", q: "", page: 1 }) }),
       );
     } else {
       td.textContent = d.page > 1 ? "No rows on this page." : "This table is empty.";
@@ -824,7 +1149,7 @@ function openColMenu(c, anchor) {
   const filt = item("Filter this column…");
   filt.addEventListener("click", () => {
     closeMenus();
-    showFilterForm(-1, { c: col.name, op: defaultOpFor(col.name) });
+    openPanel({ preset: { c: col.name, op: defaultOpFor(col.name) } });
   });
   items.push(filt);
   if (col.nullable) {
@@ -1091,10 +1416,13 @@ function renderDetails(d) {
         "Triggers",
         d.triggers.length,
         dtable(
-          ["Name", "Definition"],
+          ["Name", "Definition", ""],
           d.triggers.map((tg) => [
             el("span", { class: "mono" }, tg.name, tg.enabled ? null : el("span", { class: "tag warn", text: "disabled" })),
             el("span", { class: "mono", text: tg.definition }),
+            tg.functionOid
+              ? el("button", { type: "button", class: "link-btn", text: "View function", onclick: () => openRoutine(tg.functionOid, d.schema, { push: true }) })
+              : "",
           ]),
         ),
       ),
@@ -1114,6 +1442,125 @@ function renderDetails(d) {
   );
 
   pane.replaceChildren(...parts);
+}
+
+// ---- Routines (functions, procedures, aggregates; view only) ---------------
+
+async function openRoutine(oid, schema, { push = false } = {}) {
+  const seq = ++state.seq; // supersedes any table load still in flight
+  state.current = null;
+  state.data = null;
+  state.routine = { oid, schema, detail: null };
+  setBusy(false);
+  closeInspector();
+  closeMenus();
+  showError("");
+  showNotice("");
+  writeRoutineHash(schema, oid, push);
+  $("empty").hidden = true;
+  $("view").hidden = true;
+  $("routine").hidden = false;
+  $("routine-title").replaceChildren();
+  $("routine-facts").replaceChildren();
+  $("routine-body").replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+
+  try {
+    if (state.tablesSchema !== schema) await loadTables(schema);
+    else renderTables();
+    const detail = await api(`/routines/${encodeURIComponent(oid)}`);
+    if (seq !== state.seq) return;
+    state.routine.detail = detail;
+    if (detail.schema !== state.tablesSchema) {
+      // The link didn't say which schema this routine lives in (e.g. a trigger function).
+      await loadTables(detail.schema);
+      if (seq !== state.seq) return;
+    }
+    state.routine.schema = detail.schema;
+    writeRoutineHash(detail.schema, oid, false);
+    renderRoutine(detail);
+    renderTables();
+  } catch (err) {
+    if (seq !== state.seq) return;
+    state.routine = null;
+    $("routine").hidden = true;
+    $("empty").hidden = false;
+    renderHome();
+    renderTables();
+    showError(
+      err.message === "Function not found"
+        ? "There's no function or procedure with that id that this role can read."
+        : err.message,
+    );
+  }
+}
+
+function renderRoutine(d) {
+  const h1 = $("routine-title");
+  h1.replaceChildren();
+  if (d.schema !== state.meta.schema) h1.append(el("span", { class: "schema-prefix", text: `${d.schema}.` }));
+  h1.append(`${d.name}(${d.args})`);
+  document.title = `${d.name} · PG Studio`;
+
+  const facts = [el("span", { class: "kind-fact", text: d.kind })];
+  if (d.kind !== "aggregate") facts.push(fact("Language ", el("b", { text: d.language })));
+  if (d.returns !== null) facts.push(fact("Returns ", el("b", { class: "mono", text: d.returns })));
+  facts.push(fact("Volatility ", el("b", { text: d.volatility })));
+  if (d.securityDefiner) facts.push(el("span", { class: "rt-badge", title: "Runs with the privileges of its owner, not the caller", text: "SECURITY DEFINER" }));
+  if (d.strict) facts.push(fact("strict"));
+  if (d.leakproof) facts.push(fact("leakproof"));
+  if (d.parallel !== "unsafe") facts.push(fact("Parallel ", el("b", { text: d.parallel })));
+  if (d.rows !== null) facts.push(fact("~", el("b", { text: d.rows.toLocaleString() }), " rows returned"));
+  facts.push(fact("Owner ", el("b", { text: d.owner })));
+  $("routine-facts").replaceChildren(...facts);
+
+  const parts = [];
+  if (d.comment) parts.push(el("p", { class: "d-comment", text: d.comment }));
+
+  if (d.definition !== null) {
+    parts.push(section("Definition", null, codeBlock(d.definition, "definition")));
+  } else if (d.aggregate) {
+    parts.push(
+      section(
+        "Aggregate",
+        null,
+        kv([
+          ["Transition function", d.aggregate.transitionFunction],
+          ["State type", d.aggregate.stateType],
+          ["Final function", d.aggregate.finalFunction],
+        ]),
+        el("p", { class: "muted small", text: "Aggregates have no CREATE FUNCTION form, so only the summary is shown." }),
+      ),
+    );
+  }
+
+  if (d.usedByTriggers.length || d.returns === "trigger") {
+    parts.push(
+      section(
+        "Used by triggers",
+        d.usedByTriggers.length,
+        d.usedByTriggers.length
+          ? dtable(
+              ["Table", "Trigger", ""],
+              d.usedByTriggers.map((u) => [
+                el("span", { class: "mono", text: u.schema === state.meta.schema ? u.table : `${u.schema}.${u.table}` }),
+                el("span", { class: "mono", text: u.trigger }),
+                el("button", {
+                  type: "button",
+                  class: "link-btn",
+                  text: "Open table",
+                  onclick: () => {
+                    state.tab = "data";
+                    openTable(freshView(u.table, [], u.schema), { push: true });
+                  },
+                }),
+              ]),
+            )
+          : el("p", { class: "muted", text: "No triggers on tables you can read call this function." }),
+      ),
+    );
+  }
+
+  $("routine-body").replaceChildren(...parts);
 }
 
 // ---- Column resize -----------------------------------------------------
@@ -1216,6 +1663,7 @@ function closeMenus() {
   for (const [b, m] of [
     ["columns-btn", "columns-menu"],
     ["export-btn", "export-menu"],
+    ...SCOPE_MENUS,
   ]) {
     $(m).hidden = true;
     $(b).setAttribute("aria-expanded", "false");
@@ -1228,21 +1676,36 @@ function closeMenus() {
 }
 
 // ---- Filters -----------------------------------------------------------
+// Applied filters live in state.current.filters ({c, op, v?, off?}) and the URL hash.
+// The panel edits a draft (state.draft) that only becomes the applied state on Apply.
+
+const MAX_FILTERS = 10;
+
+function filterLabel(f) {
+  const op = OP_LABELS[f.op] ?? f.op;
+  return VALUELESS.has(f.op) ? `${f.c} ${op}` : `${f.c} ${op} ${f.v}`;
+}
 
 function renderChips() {
   const chips = $("chips");
   chips.replaceChildren();
   const cur = state.current;
+  updateFilterButton();
+  chips.hidden = state.panelOpen; // the open panel lists the same conditions
+  if (state.panelOpen) return;
+  if (cur.match === "any" && cur.filters.length > 1) {
+    chips.append(el("span", { class: "chips-mode", title: "Rows matching any one of these filters are shown", text: "any of" }));
+  }
   cur.filters.forEach((f, i) => {
     const op = OP_LABELS[f.op] ?? f.op;
-    const label = VALUELESS.has(f.op) ? `${f.c} ${op}` : `${f.c} ${op} ${f.v}`;
+    const label = filterLabel(f);
     chips.append(
       el(
         "span",
-        { class: "chip" },
+        { class: f.off ? "chip off" : "chip" },
         el(
           "button",
-          { type: "button", class: "chip-text", title: `Edit: ${label}`, onclick: () => showFilterForm(i) },
+          { type: "button", class: "chip-text", title: `${f.off ? "Off. " : ""}Edit: ${label}`, onclick: () => openPanel({ row: i }) },
           el("b", { text: f.c }),
           ` ${op} `,
           VALUELESS.has(f.op) ? null : el("span", { class: "v", text: f.v }),
@@ -1259,27 +1722,41 @@ function renderChips() {
     );
   });
   if (cur.filters.length > 1) {
-    chips.append(el("button", { type: "button", class: "link-btn small", text: "Clear all", onclick: () => reload({ filters: [], page: 1 }) }));
+    chips.append(el("button", { type: "button", class: "link-btn small", text: "Clear all", onclick: () => reload({ filters: [], match: "all", page: 1 }) }));
   }
 }
 
-function showFilterForm(index = -1, preset = null) {
-  const t = state.data.table;
-  state.editingFilter = index;
-  const f = preset ?? (index >= 0 ? state.current.filters[index] : null);
+/** "Filter" plus a badge with the number of filters that are switched on. */
+function updateFilterButton() {
+  const n = state.current ? state.current.filters.filter((f) => !f.off).length : 0;
+  const btn = $("filter-btn");
+  btn.replaceChildren("Filter", ...(n ? [el("span", { class: "fp-count", text: String(n) })] : []));
+  btn.classList.toggle("active", n > 0);
+  btn.setAttribute("aria-expanded", String(state.panelOpen));
+  btn.setAttribute("aria-label", n ? `Filter, ${plural(n, "condition")} on` : "Filter");
+}
 
-  const colSel = $("ff-col");
-  colSel.replaceChildren(...t.columns.map((c) => el("option", { value: c.name, text: c.name })));
-  const opSel = $("ff-op");
-  opSel.replaceChildren(...state.meta.filterOps.map((op) => el("option", { value: op, text: OP_LABELS[op] ?? op })));
+function isComplete(row) {
+  return VALUELESS.has(row.op) || row.v !== "";
+}
 
-  colSel.value = f?.c ?? t.columns[0]?.name ?? "";
-  opSel.value = f?.op ?? defaultOpFor(colSel.value);
-  $("ff-val").value = f?.v ?? "";
-  syncValueInput();
-  $("filter-form").querySelector('button[type="submit"]').textContent = index >= 0 ? "Update filter" : "Apply";
-  $("filter-form").hidden = false;
-  (VALUELESS.has(opSel.value) ? opSel : $("ff-val")).focus();
+/** The draft as applied filters, skipping rows that have no value yet. */
+function draftFilters() {
+  return state.draft.rows.filter(isComplete).map((r) => {
+    const f = { c: r.c, op: r.op };
+    if (!VALUELESS.has(r.op)) f.v = r.v;
+    if (!r.on) f.off = true;
+    return f;
+  });
+}
+
+function seedDraft() {
+  const cur = state.current;
+  state.draft = { match: cur.match, rows: cur.filters.map((f) => ({ on: !f.off, c: f.c, op: f.op, v: f.v ?? "" })) };
+}
+
+function newRow(c = state.data.table.columns[0]?.name ?? "", op = defaultOpFor(c)) {
+  return { on: true, c, op, v: "" };
 }
 
 function defaultOpFor(colName) {
@@ -1287,30 +1764,156 @@ function defaultOpFor(colName) {
   return col && (col.category === "S" || col.category === "U") ? "contains" : "eq";
 }
 
-function syncValueInput() {
-  const valueless = VALUELESS.has($("ff-op").value);
-  const input = $("ff-val");
-  input.hidden = valueless;
-  input.required = !valueless;
-  const col = state.data?.table.columns.find((c) => c.name === $("ff-col").value);
+/** Show/hide the value box and set its placeholder for the row's operator and column type. */
+function syncRow(node, row) {
+  const input = node.querySelector('input[type="text"]');
+  input.hidden = VALUELESS.has(row.op);
+  const col = state.data.table.columns.find((c) => c.name === row.c);
   input.placeholder =
     col?.category === "D" ? "e.g. 2026-01-31" : col?.category === "N" ? "a number" : col?.category === "B" ? "true or false" : "value";
+  node.classList.toggle("off", !row.on);
 }
 
-function hideFilterForm() {
-  $("filter-form").hidden = true;
-  state.editingFilter = -1;
+function panelRow(row) {
+  const names = state.data.table.columns.map((c) => c.name);
+  if (!names.includes(row.c)) names.unshift(row.c); // a saved link may name a column that's gone
+  const on = el("input", { type: "checkbox", "aria-label": "Condition on", title: "Turn this condition on or off" });
+  on.checked = row.on;
+  const col = el("select", { "aria-label": "Column" }, ...names.map((n) => el("option", { value: n, text: n })));
+  col.value = row.c;
+  const op = el("select", { "aria-label": "Condition" }, ...state.meta.filterOps.map((o) => el("option", { value: o, text: OP_LABELS[o] ?? o })));
+  op.value = row.op;
+  const val = el("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": "Value" });
+  val.value = row.v;
+  const rm = el("button", { type: "button", class: "icon-btn fp-x", "aria-label": "Remove condition", title: "Remove condition", text: "×" });
+  const node = el("div", { class: "fp-row" }, on, col, op, val, rm);
+
+  on.addEventListener("change", () => {
+    row.on = on.checked;
+    syncRow(node, row);
+  });
+  col.addEventListener("change", () => {
+    row.c = col.value;
+    row.op = defaultOpFor(row.c);
+    op.value = row.op;
+    syncRow(node, row);
+  });
+  op.addEventListener("change", () => {
+    row.op = op.value;
+    syncRow(node, row);
+  });
+  val.addEventListener("input", () => (row.v = val.value));
+  rm.addEventListener("click", () => {
+    state.draft.rows.splice(state.draft.rows.indexOf(row), 1);
+    renderPanel();
+    $("fp-add").focus();
+  });
+  syncRow(node, row);
+  return node;
 }
 
-function submitFilter(e) {
-  e.preventDefault();
-  const f = { c: $("ff-col").value, op: $("ff-op").value };
-  if (!VALUELESS.has(f.op)) f.v = $("ff-val").value;
-  const filters = [...state.current.filters];
-  if (state.editingFilter >= 0) filters[state.editingFilter] = f;
-  else filters.push(f);
-  hideFilterForm();
-  reload({ filters, page: 1 });
+function renderPanel() {
+  const rows = state.draft.rows;
+  $("fp-rows").replaceChildren(
+    ...(rows.length ? rows.map(panelRow) : [el("p", { class: "fp-empty small muted", text: "No conditions. Add one to narrow the rows." })]),
+  );
+  renderPanelFoot();
+}
+
+function renderPanelFoot() {
+  $("fp-add").disabled = state.draft.rows.length >= MAX_FILTERS;
+  $("fp-add").title = state.draft.rows.length >= MAX_FILTERS ? `At most ${MAX_FILTERS} conditions` : "";
+  $("fp-all").setAttribute("aria-pressed", String(state.draft.match === "all"));
+  $("fp-any").setAttribute("aria-pressed", String(state.draft.match === "any"));
+}
+
+function focusRow(i) {
+  const node = $("fp-rows").children[i];
+  if (!node || !node.classList.contains("fp-row")) return;
+  const input = node.querySelector('input[type="text"]');
+  (input.hidden ? node.querySelectorAll("select")[1] : input).focus();
+}
+
+/** Open the panel (optionally focusing row `row`, or adding a pre-filled `preset` row). */
+function openPanel({ row = 0, preset = null } = {}) {
+  if (!state.data) return;
+  closeMenus();
+  if (!state.panelOpen) {
+    state.panelOpen = true;
+    seedDraft();
+  }
+  const rows = state.draft.rows;
+  if (preset && rows.length < MAX_FILTERS) {
+    rows.push(newRow(preset.c, preset.op));
+    row = rows.length - 1;
+  } else if (!rows.length) {
+    rows.push(newRow());
+    row = 0;
+  }
+  $("filter-panel").hidden = false;
+  renderPanel();
+  renderChips();
+  refreshSql();
+  focusRow(row);
+}
+
+function closePanel() {
+  state.panelOpen = false;
+  state.draft = null;
+  $("filter-panel").hidden = true;
+  if (state.current) renderChips();
+}
+
+function togglePanel() {
+  if (state.panelOpen) closePanel();
+  else openPanel();
+}
+
+function applyPanel() {
+  const d = state.draft;
+  const filters = draftFilters();
+  // Drop rows that were left without a value; keep one blank row to type into.
+  const kept = d.rows.filter(isComplete);
+  if (kept.length !== d.rows.length || !kept.length) {
+    d.rows = kept.length ? kept : [newRow()];
+    renderPanel();
+  }
+  reload({ filters, match: d.match, page: 1 });
+}
+
+/** Called when the applied filters changed from outside the panel (chips, menus, Back/Forward). */
+function syncPanelWithApplied() {
+  if (!state.panelOpen) return;
+  const cur = state.current;
+  if (JSON.stringify([draftFilters(), state.draft.match]) === JSON.stringify([cur.filters, cur.match])) return;
+  seedDraft();
+  if (!state.draft.rows.length) state.draft.rows.push(newRow());
+  renderPanel();
+}
+
+function toggleSql() {
+  state.sqlOpen = !state.sqlOpen;
+  $("fp-sql").hidden = !state.sqlOpen;
+  $("fp-sql-btn").setAttribute("aria-pressed", String(state.sqlOpen));
+  refreshSql();
+}
+
+/** Fetch the display-only SELECT for the applied view and show it. */
+async function refreshSql() {
+  if (!state.panelOpen || !state.sqlOpen || !state.current) return;
+  const cur = state.current;
+  const seq = ++state.sqlSeq;
+  const pre = $("fp-sql-text");
+  try {
+    const { sql } = await api(`${tablePath(cur, "/sql")}?${viewQuery(cur, { pageSize: String(cur.pageSize) })}`);
+    if (seq !== state.sqlSeq) return;
+    state.sql = sql;
+    pre.textContent = sql;
+  } catch (err) {
+    if (seq !== state.sqlSeq) return;
+    state.sql = "";
+    pre.textContent = `Couldn't build the SQL: ${err.message}`;
+  }
 }
 
 // ---- Export ------------------------------------------------------------
@@ -1321,7 +1924,7 @@ async function doExport(format) {
   showError("");
   showNotice("Preparing the download…");
   try {
-    const res = await fetch(`/api${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`);
+    const res = await fetch(`/api${scoped(`${tablePath(cur, "/export")}?${viewQuery(cur, { format })}`)}`);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try {
@@ -1507,16 +2110,21 @@ function closeInspector() {
 async function loadAllTables() {
   const lists = await Promise.all(
     state.schemas.map(async (s) => {
+      const q = new URLSearchParams({ schema: s.name });
+      const routines = api(`/routines?${q}`).then((r) => r.routines, () => []);
       try {
-        const { tables } = await api(`/tables?${new URLSearchParams({ schema: s.name })}`);
-        return tables.map((t) => ({ ...t, schema: s.name }));
+        const { tables } = await api(`/tables?${q}`);
+        return { tables: tables.map((t) => ({ ...t, schema: s.name })), routines: (await routines).map((r) => ({ ...r, schema: s.name })) };
       } catch {
-        return [];
+        return { tables: [], routines: [] };
       }
     }),
   );
-  state.allTables = lists.flat();
+  state.allTables = lists.flatMap((l) => l.tables);
+  state.allRoutines = lists.flatMap((l) => l.routines);
 }
+
+const ROUTINE_TAG = { function: "fn", procedure: "proc", aggregate: "agg", window: "win" };
 
 /** Subsequence match: returns matched character positions and a score (lower is better), or null. */
 function fuzzy(text, query) {
@@ -1560,11 +2168,14 @@ function highlighted(text, hits) {
 
 function renderJump() {
   const q = $("jump-input").value.trim().toLowerCase();
-  const all = state.allTables ?? state.tables.map((t) => ({ ...t, schema: state.tablesSchema }));
-  const here = state.current?.schema ?? state.tablesSchema;
+  const tag = (list) => list.map((r) => ({ ...r, schema: state.tablesSchema, isRoutine: true }));
+  const all = state.allTables
+    ? [...state.allTables, ...state.allRoutines.map((r) => ({ ...r, isRoutine: true }))]
+    : [...state.tables.map((t) => ({ ...t, schema: state.tablesSchema })), ...tag(state.routines)];
+  const here = state.current?.schema ?? state.routine?.schema ?? state.tablesSchema;
   let items;
   if (!q) {
-    const recent = storageGet("pgstudio:recent", []);
+    const recent = storageGet(skey("recent"), []);
     const rank = (t) => {
       const ri = recent.findIndex((r) => r.schema === t.schema && r.name === t.name);
       return ri >= 0 ? ri : 100 + (t.schema === here ? 0 : 1000);
@@ -1582,7 +2193,7 @@ function renderJump() {
 
   const list = $("jump-list");
   if (!state.jumpItems.length) {
-    list.replaceChildren(el("li", { class: "empty-li", text: q ? `No table or view matches "${q}".` : "Nothing to show." }));
+    list.replaceChildren(el("li", { class: "empty-li", text: q ? `No table, view or function matches "${q}".` : "Nothing to show." }));
     return;
   }
   list.replaceChildren(
@@ -1590,11 +2201,14 @@ function renderJump() {
       const name = el("span", { class: "tname" });
       if (t.schema !== here) name.append(el("span", { class: "sc", text: `${t.schema}.` }));
       name.append(highlighted(t.name, hits));
+      if (t.isRoutine) name.append(el("span", { class: "rt-tag", text: ROUTINE_TAG[t.kind] ?? "fn" }));
       const li = el(
         "li",
-        { role: "option", id: `jump-opt-${i}`, "aria-selected": String(i === state.jumpIndex) },
+        { role: "option", id: `jump-opt-${i}`, "aria-selected": String(i === state.jumpIndex), title: t.isRoutine ? `${t.name}(${t.args})` : null },
         name,
-        el("span", { class: "tmeta", text: [KIND_LABEL[t.kind], t.kind === "view" ? "" : fmtCount(t.estimatedRows)].filter(Boolean).join(", ") }),
+        t.isRoutine
+          ? el("span", { class: "tmeta rt-args", text: `(${t.args})` })
+          : el("span", { class: "tmeta", text: [KIND_LABEL[t.kind], t.kind === "view" ? "" : fmtCount(t.estimatedRows)].filter(Boolean).join(", ") }),
       );
       li.addEventListener("mousemove", () => {
         if (state.jumpIndex !== i) {
@@ -1621,6 +2235,10 @@ function chooseJump(i) {
   const item = state.jumpItems[i];
   if (!item) return;
   $("jump").close();
+  if (item.t.isRoutine) {
+    openRoutine(item.t.oid, item.t.schema, { push: true });
+    return;
+  }
   state.tab = "data";
   openTable(freshView(item.t.name, [], item.t.schema), { push: true });
 }
@@ -1648,15 +2266,14 @@ function wire() {
   document.querySelectorAll("kbd.mod").forEach((k) => (k.textContent = MOD));
 
   $("filter").addEventListener("input", renderTables);
-  $("schema-select").addEventListener("change", async (e) => {
-    showError("");
-    try {
-      $("filter").value = "";
-      await loadTables(e.target.value);
-    } catch (err) {
-      showError(err.message);
-    }
-  });
+  const scopeMenus = { "conn-btn": ["conn-menu", openConnMenu], "db-btn": ["db-menu", openDbMenu], "schema-btn": ["schema-menu", openSchemaMenu] };
+  for (const [btn, [menu, onOpen]] of Object.entries(scopeMenus)) {
+    $(btn).addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(btn, menu, onOpen);
+    });
+    $(menu).addEventListener("click", (e) => e.stopPropagation());
+  }
   $("error-close").addEventListener("click", () => showError(""));
 
   $("first").addEventListener("click", () => state.data?.hasPrev && reload({ page: 1 }));
@@ -1689,13 +2306,32 @@ function wire() {
     }
   });
 
-  $("add-filter").addEventListener("click", () => state.data && showFilterForm(-1));
-  $("filter-form").addEventListener("submit", submitFilter);
-  $("ff-cancel").addEventListener("click", hideFilterForm);
-  $("ff-op").addEventListener("change", syncValueInput);
-  $("ff-col").addEventListener("change", () => {
-    if (state.editingFilter < 0) $("ff-op").value = defaultOpFor($("ff-col").value);
-    syncValueInput();
+  $("filter-btn").addEventListener("click", () => state.data && togglePanel());
+  $("fp-add").addEventListener("click", () => {
+    state.draft.rows.push(newRow());
+    renderPanel();
+    focusRow(state.draft.rows.length - 1);
+  });
+  for (const m of ["all", "any"]) {
+    $(`fp-${m}`).addEventListener("click", () => {
+      state.draft.match = m;
+      renderPanelFoot();
+    });
+  }
+  $("fp-apply").addEventListener("click", applyPanel);
+  $("fp-clear").addEventListener("click", () => {
+    state.draft.rows = [newRow()];
+    state.draft.match = "all";
+    renderPanel();
+    applyPanel();
+  });
+  $("fp-sql-btn").addEventListener("click", toggleSql);
+  $("fp-copy").addEventListener("click", () => state.sql && copyText(state.sql, "Copied SQL"));
+  $("filter-panel").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.matches('input[type="text"]')) {
+      e.preventDefault();
+      applyPanel();
+    }
   });
 
   $("columns-btn").addEventListener("click", (e) => {
@@ -1796,8 +2432,11 @@ function wire() {
     }
     if ($("jump").open || $("help").open) return; // dialogs handle their own keys
     if (e.key === "Escape") {
-      if (colMenu || !$("columns-menu").hidden || !$("export-menu").hidden) closeMenus();
-      else if (!$("filter-form").hidden) hideFilterForm();
+      if (colMenu || [...SCOPE_MENUS, ["", "columns-menu"], ["", "export-menu"]].some(([, m]) => !$(m).hidden)) closeMenus();
+      else if (state.panelOpen) {
+        closePanel();
+        $("filter-btn").focus();
+      }
       else if (!$("inspector").hidden) {
         closeInspector();
         $("grid-wrap").focus({ preventScroll: true });
@@ -1812,6 +2451,9 @@ function wire() {
       e.preventDefault();
       $("search").focus();
       $("search").select();
+    } else if (e.key === "f" && state.data && state.tab === "data") {
+      e.preventDefault();
+      togglePanel();
     } else if (e.key === "]" && state.tab === "data") {
       goNext();
     } else if (e.key === "[" && state.tab === "data") {
@@ -1821,17 +2463,21 @@ function wire() {
 
   const onNav = () => {
     const h = readHash();
+    if (!state.connections.some((c) => c.id === h.conn)) {
+      showError(`There's no saved connection called "${h.conn}".`);
+      return;
+    }
+    // A switch still loading (no meta yet) restarts with the new target.
+    if (scopeChanged(h) || !state.meta) {
+      enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+      return;
+    }
+    if (h.fn && !h.name) {
+      if (state.routine?.oid !== h.fn) openRoutine(h.fn, h.schema);
+      return;
+    }
     if (!h.name) {
-      if (state.current) {
-        state.current = null;
-        state.data = null;
-        $("view").hidden = true;
-        $("empty").hidden = false;
-        closeInspector();
-        renderTables();
-        renderHome();
-        document.title = "PG Studio";
-      }
+      if (state.current || state.routine) showHome();
       return;
     }
     const tabChanged = h.tab !== state.tab;
@@ -1853,31 +2499,17 @@ function wire() {
 async function init() {
   wire();
   try {
-    state.meta = await api("/meta");
-    const mode = $("mode");
-    mode.textContent = state.meta.capabilities.edit ? "Editing on" : "Read-only";
-    if (state.meta.role.canWrite) {
-      mode.classList.add("danger");
-      mode.textContent = "Read-only app, but this role can write";
-      mode.title =
-        `Connected as "${state.meta.role.name}", which can change data. ` +
-        "The app only reads, but use a SELECT-only role so that doesn't depend on the code being bug-free.";
-    } else {
-      mode.title = `Connected as "${state.meta.role.name}", which can only read. All queries run in read-only transactions.`;
+    const { connections } = await api("/connections");
+    state.connections = connections;
+    let h = readHash();
+    if (!connections.some((c) => c.id === h.conn)) {
+      state.pendingError = `There's no saved connection called "${h.conn}".`;
+      h = { ...h, conn: connections[0].id, db: null, name: null, fn: null };
     }
-
-    const { schemas } = await api("/schemas");
-    state.schemas = schemas;
-    const h = readHash();
-    const startSchema = schemas.some((s) => s.name === h.schema) ? h.schema : state.meta.schema;
-    await loadTables(startSchema);
-    renderSchemaSelect();
-
-    if (h.name && state.tables.some((t) => t.name === h.name)) {
-      state.tab = h.tab;
-      openTable({ ...h.view, schema: startSchema });
-    } else {
-      renderHome();
+    await enterScope(h.conn, h.db, h.name || h.fn ? h : null);
+    if (state.pendingError && !h.name && !h.fn) {
+      showError(state.pendingError);
+      state.pendingError = null;
     }
   } catch (err) {
     showError(err.message);

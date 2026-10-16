@@ -8,17 +8,17 @@
  * writable connection by mistake.
  */
 import pg from "pg";
-import type { Config } from "./config.js";
 
 export type Db = {
   withReadOnly<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 };
 
-export function createDb(config: Config): Db {
+/** A read-only pool. `target` is a parsed connection (see pools.ts), never logged. */
+export function createDb(target: pg.PoolConfig, statementTimeoutMs: number, max = 5): Db {
   const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
-    max: 5,
+    ...target,
+    max,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     application_name: "pg-studio (read-only)",
@@ -38,7 +38,7 @@ export function createDb(config: Config): Db {
         // runs request-derived SQL text and why a SELECT-only role is required.
         await client.query("BEGIN TRANSACTION READ ONLY");
         await client.query("SELECT set_config('statement_timeout', $1, true)", [
-          String(Math.trunc(config.statementTimeoutMs)),
+          String(Math.trunc(statementTimeoutMs)),
         ]);
         return await fn(client);
       } finally {

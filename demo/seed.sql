@@ -139,6 +139,74 @@ SELECT b.id AS book_id, b.title, a.name AS author, sum(oi.quantity) AS copies_so
 FROM order_items oi JOIN books b ON b.id = oi.book_id JOIN authors a ON a.id = b.author_id
 GROUP BY b.id, b.title, a.name;
 
+-- functions and procedures
+CREATE FUNCTION book_rating(p_book_id int) RETURNS numeric
+LANGUAGE sql STABLE
+AS $$
+  SELECT round(avg(rating), 2) FROM reviews WHERE book_id = p_book_id;
+$$;
+COMMENT ON FUNCTION book_rating(int) IS 'Average review rating (1-5) for a book, or NULL if unreviewed';
+
+CREATE FUNCTION top_books_by_revenue(p_limit int DEFAULT 10)
+RETURNS TABLE (book_id int, title text, revenue_cents bigint)
+LANGUAGE plpgsql STABLE ROWS 10
+AS $$
+BEGIN
+  RETURN QUERY
+    SELECT s.book_id, s.title, s.revenue_cents::bigint
+      FROM book_sales s
+     ORDER BY s.revenue_cents DESC
+     LIMIT p_limit;
+END;
+$$;
+COMMENT ON FUNCTION top_books_by_revenue(int) IS 'Best sellers by revenue, from the book_sales materialized view';
+
+-- overloaded: format cents, optionally with a currency symbol
+CREATE FUNCTION format_price(cents int) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT to_char(cents / 100.0, 'FM999G999D00') $$;
+
+CREATE FUNCTION format_price(cents int, symbol text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT symbol || to_char(cents / 100.0, 'FM999G999D00') $$;
+
+CREATE PROCEDURE refresh_book_sales()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  REFRESH MATERIALIZED VIEW book_sales;
+END;
+$$;
+COMMENT ON PROCEDURE refresh_book_sales() IS 'Rebuild the book_sales materialized view';
+
+-- harmless trigger: strips hyphens and spaces from ISBNs on write
+CREATE FUNCTION normalize_isbn() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.isbn := regexp_replace(NEW.isbn, '[-\s]', '', 'g');
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER books_normalize_isbn
+BEFORE INSERT OR UPDATE OF isbn ON books
+FOR EACH ROW EXECUTE FUNCTION normalize_isbn();
+
+CREATE FUNCTION customer_order_count(p_customer_id bigint) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT count(*) FROM orders WHERE customer_id = p_customer_id;
+$$;
+COMMENT ON FUNCTION customer_order_count(bigint) IS 'Runs with the owner''s privileges so callers need no SELECT on orders';
+
+CREATE AGGREGATE sum_cents(int) (
+  SFUNC = int4pl,
+  STYPE = int,
+  INITCOND = '0'
+);
+
 ANALYZE;
 
 -- read-only role, exactly as the README recommends
@@ -146,3 +214,51 @@ CREATE ROLE pgstudio_ro LOGIN PASSWORD 'demo_ro';
 GRANT CONNECT ON DATABASE bookshop TO pgstudio_ro;
 GRANT USAGE ON SCHEMA public TO pgstudio_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO pgstudio_ro;
+
+-- A second database on the same server, to try the database switcher.
+-- psql runs this file, so \connect works; everything below lands in "analytics".
+CREATE DATABASE analytics;
+\connect analytics
+
+CREATE SCHEMA reporting;
+
+CREATE TABLE page_views (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  path       text        NOT NULL,
+  referrer   text,
+  country    char(2)     NOT NULL,
+  device     text        NOT NULL,
+  viewed_at  timestamptz NOT NULL
+);
+CREATE INDEX page_views_viewed_at_idx ON page_views(viewed_at);
+
+CREATE TABLE signups (
+  id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email       text        NOT NULL UNIQUE,
+  source      text        NOT NULL,
+  signed_up_at timestamptz NOT NULL
+);
+
+INSERT INTO page_views (path, referrer, country, device, viewed_at)
+SELECT (ARRAY['/', '/books', '/books/' || (1 + g % 3000), '/authors', '/cart', '/checkout'])[1 + (g % 6)],
+       (ARRAY['https://www.google.com/', 'https://news.ycombinator.com/', NULL, 'https://duckduckgo.com/', NULL])[1 + (g % 5)],
+       (ARRAY['US', 'GB', 'DE', 'IN', 'FR', 'CA', 'BR', 'JP'])[1 + (g % 8)],
+       (ARRAY['desktop', 'mobile', 'tablet'])[1 + (g % 3)],
+       timestamptz '2024-01-01' + (g * interval '97 seconds')
+FROM generate_series(1, 60000) g;
+
+INSERT INTO signups (email, source, signed_up_at)
+SELECT 'user' || g || '@example.com',
+       (ARRAY['organic', 'newsletter', 'ads', 'referral'])[1 + (g % 4)],
+       timestamptz '2024-01-01' + (g * interval '53 minutes')
+FROM generate_series(1, 5000) g;
+
+CREATE VIEW reporting.daily_views AS
+SELECT date_trunc('day', viewed_at)::date AS day, count(*) AS views, count(DISTINCT path) AS pages
+FROM public.page_views GROUP BY 1;
+
+ANALYZE;
+
+GRANT CONNECT ON DATABASE analytics TO pgstudio_ro;
+GRANT USAGE ON SCHEMA public, reporting TO pgstudio_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public, reporting TO pgstudio_ro;

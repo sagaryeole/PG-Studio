@@ -41,6 +41,8 @@ export interface Filter {
 export interface ViewSpec {
   sort: { column: string; dir: "asc" | "desc" } | null;
   filters: Filter[];
+  /** How filters combine: every one ("all", AND) or at least one ("any", OR). Search is always ANDed. */
+  match: "all" | "any";
   search: string;
 }
 
@@ -99,11 +101,15 @@ export function parseViewSpec(query: Record<string, unknown>, table: TableMeta):
     }
   }
 
+  // Match mode
+  const match = str(query["match"], "match") ?? "all";
+  if (match !== "all" && match !== "any") throw new HttpError(400, "match must be all or any");
+
   // Search
   const search = (str(query["q"], "q") ?? "").trim();
   if (search.length > MAX_SEARCH_LEN) throw new HttpError(400, "Search text too long");
 
-  return { sort, filters, search };
+  return { sort, filters, match, search };
 }
 
 function escapeLike(s: string): string {
@@ -122,6 +128,7 @@ export function searchableColumns(table: TableMeta): ColumnMeta[] {
  */
 export function buildWhere(table: TableMeta, spec: ViewSpec, params: unknown[]): string {
   const parts: string[] = [];
+  const filterParts: string[] = [];
   const p = (v: unknown): string => `$${params.push(v)}`;
 
   for (const f of spec.filters) {
@@ -129,42 +136,48 @@ export function buildWhere(table: TableMeta, spec: ViewSpec, params: unknown[]):
     const v = f.value ?? "";
     switch (f.op) {
       case "eq":
-        parts.push(`${col} = ${p(v)}`);
+        filterParts.push(`${col} = ${p(v)}`);
         break;
       case "neq":
-        parts.push(`${col} IS DISTINCT FROM ${p(v)}`);
+        filterParts.push(`${col} IS DISTINCT FROM ${p(v)}`);
         break;
       case "lt":
-        parts.push(`${col} < ${p(v)}`);
+        filterParts.push(`${col} < ${p(v)}`);
         break;
       case "lte":
-        parts.push(`${col} <= ${p(v)}`);
+        filterParts.push(`${col} <= ${p(v)}`);
         break;
       case "gt":
-        parts.push(`${col} > ${p(v)}`);
+        filterParts.push(`${col} > ${p(v)}`);
         break;
       case "gte":
-        parts.push(`${col} >= ${p(v)}`);
+        filterParts.push(`${col} >= ${p(v)}`);
         break;
       case "contains":
-        parts.push(`${col}::text ILIKE ${p(`%${escapeLike(v)}%`)} ESCAPE '\\'`);
+        filterParts.push(`${col}::text ILIKE ${p(`%${escapeLike(v)}%`)} ESCAPE '\\'`);
         break;
       case "not_contains":
-        parts.push(`(${col} IS NULL OR ${col}::text NOT ILIKE ${p(`%${escapeLike(v)}%`)} ESCAPE '\\')`);
+        filterParts.push(`(${col} IS NULL OR ${col}::text NOT ILIKE ${p(`%${escapeLike(v)}%`)} ESCAPE '\\')`);
         break;
       case "starts":
-        parts.push(`${col}::text ILIKE ${p(`${escapeLike(v)}%`)} ESCAPE '\\'`);
+        filterParts.push(`${col}::text ILIKE ${p(`${escapeLike(v)}%`)} ESCAPE '\\'`);
         break;
       case "ends":
-        parts.push(`${col}::text ILIKE ${p(`%${escapeLike(v)}`)} ESCAPE '\\'`);
+        filterParts.push(`${col}::text ILIKE ${p(`%${escapeLike(v)}`)} ESCAPE '\\'`);
         break;
       case "null":
-        parts.push(`${col} IS NULL`);
+        filterParts.push(`${col} IS NULL`);
         break;
       case "not_null":
-        parts.push(`${col} IS NOT NULL`);
+        filterParts.push(`${col} IS NOT NULL`);
         break;
     }
+  }
+
+  if (filterParts.length > 0) {
+    // The OR group is parenthesised so it stays one term when ANDed with the search.
+    const any = spec.match === "any" && filterParts.length > 1;
+    parts.push(any ? `(${filterParts.join(" OR ")})` : filterParts.join(" AND "));
   }
 
   if (spec.search) {

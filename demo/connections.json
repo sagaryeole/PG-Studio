@@ -1,0 +1,4 @@
+[
+  { "name": "Demo bookshop", "url": "postgres://pgstudio_ro@127.0.0.1:55432/bookshop" },
+  { "name": "Demo analytics", "url": "postgres://pgstudio_ro@127.0.0.1:55432/analytics", "schema": "reporting" }
+]

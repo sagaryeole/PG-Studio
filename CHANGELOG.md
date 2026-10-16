@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `pg-studio` command, published to npm as `@sagaryeole/pg-studio`: `npx @sagaryeole/pg-studio <url> --open`, with `--connections`, `--port`, `--schema`, `--env-file` and `--open`.
+- Docker image `ghcr.io/sagaryeole/pg-studio` (amd64 and arm64, non-root, health check). Publish it with `-p 127.0.0.1:4321:4321`.
+- Publishing a GitHub release publishes the npm package (with provenance) and the image.
+- CI installs the packed npm tarball and runs the container, and runs the smoke test against both.
+
+### Fixed
+
+- A port that's already in use now gives a clear error instead of a startup message followed by a crash.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

@@ -89,9 +89,42 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 
 ### Requirements
 
-- **Node.js 20.6+** (uses `--env-file`)
+- **Node.js 20.6+**, or Docker
 - **PostgreSQL 14 or newer** (CI tests 14, 15, 16 and 17)
 - A modern browser
+
+### Run it with one command
+
+```bash
+npx @sagaryeole/pg-studio postgres://pgstudio_ro@127.0.0.1:5432/mydb --open
+```
+
+or install it once (`npm install -g @sagaryeole/pg-studio`) and run `pg-studio`. Use a [read-only role](#use-it-with-your-own-database), and keep the password out of the command line: other users on the machine can see it. Put it in [`~/.pgpass`](https://www.postgresql.org/docs/current/libpq-pgpass.html) or `PGPASSWORD`, or use a [connections file](#several-servers-or-databases).
+
+| Option | |
+|---|---|
+| `[url]`, `-u, --url` | Connection string (same as `DATABASE_URL`) |
+| `-c, --connections <file>` | Saved connections file (default `./connections.json`) |
+| `-p, --port <n>` | Port on 127.0.0.1 (default 4321) |
+| `-s, --schema <name>` | Schema to open first |
+| `-e, --env-file <file>` | Load settings from an env file (Node 20.12+) |
+| `-o, --open` | Open the browser when ready |
+
+<details>
+<summary><b>Docker</b></summary>
+
+```bash
+docker run --rm -p 127.0.0.1:4321:4321 \
+  -e DATABASE_URL=postgres://pgstudio_ro:secret@host.docker.internal:5432/mydb \
+  ghcr.io/sagaryeole/pg-studio
+```
+
+- **Always publish to `127.0.0.1`** (`-p 127.0.0.1:4321:4321`). PG Studio has no login, and inside the container it has to listen on all interfaces so Docker can forward the port. `-p 4321:4321` would expose it to your network.
+- `localhost` inside the container is the container itself. To reach PostgreSQL on your machine use `host.docker.internal` (on Linux add `--add-host=host.docker.internal:host-gateway`), or put both containers on one Docker network and use the service name.
+- Saved connections: `-v "$PWD/connections.json:/app/connections.json:ro"`.
+- The image runs as a non-root user and has a health check.
+
+</details>
 
 ### Try it with the demo database (30 seconds)
 
@@ -168,6 +201,7 @@ All configuration is through environment variables (`.env`):
 | `PG_SCHEMA` | `public` | Schema shown first (a connection's `"schema"` overrides it). Any schema the role has `USAGE` on can be picked from the top bar. |
 | `STATEMENT_TIMEOUT_MS` | `5000` | Per-query timeout, so a slow query can't tie up the database. Exports use it too. |
 | `EXPORT_MAX_ROWS` | `10000` | Max rows in one CSV/JSON export (max 100,000). |
+| `PG_STUDIO_CONTAINER` | (unset) | Set by the official Docker image only: listen on all interfaces inside the container and accept any published port on `127.0.0.1`/`localhost`. Don't set it anywhere else. |
 
 ### Several servers or databases
 
@@ -221,7 +255,7 @@ PG Studio is built to be safe to point at a real database:
 - **No SQL from the browser.** No endpoint accepts SQL. Table and column names are resolved against `pg_catalog` and quoted with `pg.escapeIdentifier`; operators come from a fixed list; every value is a bind parameter.
 - **Read-only twice over.** `BEGIN READ ONLY` plus a mandatory `ROLLBACK`, *and* a SELECT-only role (the real boundary).
 - **Bounded reads.** Page size ≤ 100, cells cut to 5,000 characters inside PostgreSQL, a per-query `statement_timeout`, and capped exports.
-- **Localhost hardening.** Binds to `127.0.0.1`, `Host` header allow-list against DNS rebinding, same-origin guard for any future writes, and a strict CSP with no inline script or style.
+- **Localhost hardening.** Binds to `127.0.0.1` (in the Docker image, publish with `-p 127.0.0.1:…`), `Host` header allow-list against DNS rebinding, same-origin guard for any future writes, and a strict CSP with no inline script or style.
 - **XSS-safe rendering.** Every database value is rendered with `textContent`.
 - **No credential leaks.** Connection strings are redacted from logs and error messages, and never sent to the browser: it picks a saved connection by id, and only databases the role may `CONNECT` to can be opened.
 

@@ -18,7 +18,7 @@ const app = express();
 app.disable("x-powered-by");
 app.set("query parser", "simple");
 
-app.use(hostCheck(config.port));
+app.use(hostCheck(config.port, config.container));
 app.use(securityHeaders);
 
 const api = express.Router();
@@ -26,7 +26,7 @@ api.use((_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
-api.use(requireSameOriginForWrites(config.port));
+api.use(requireSameOriginForWrites(config.port, config.container));
 api.use(connectionRoutes(pools));
 api.use(readRoutes(config, pools));
 api.use(routineRoutes(config, pools));
@@ -42,11 +42,17 @@ app.use(express.static(path.resolve(here, "..", "public"), { index: "index.html"
 
 app.use(errorHandler);
 
-const server = app.listen(config.port, config.host, () => {
+// Express 5 also calls this on a listen error; the "error" handler below reports it.
+const server = app.listen(config.port, config.host, (err?: Error) => {
+  if (err) return;
   const n = config.connections.length;
-  console.log(
-    `PG Studio on http://${config.host}:${config.port}  (read-only, ${n} connection${n === 1 ? "" : "s"} from ${config.connectionsSource})`,
-  );
+  const summary = `(read-only, ${n} connection${n === 1 ? "" : "s"} from ${config.connectionsSource})`;
+  if (config.container) {
+    console.log(`PG Studio listening on port ${config.port} inside the container ${summary}`);
+    console.log(`  Publish it to localhost only, e.g.  docker run -p 127.0.0.1:${config.port}:${config.port} ...`);
+  } else {
+    console.log(`PG Studio on http://${config.host}:${config.port}  ${summary}`);
+  }
   for (const conn of config.connections) {
     const schema = conn.schema ?? config.schema;
     pools
@@ -66,6 +72,15 @@ const server = app.listen(config.port, config.host, () => {
       })
       .catch((err: unknown) => console.error(`[db] ${conn.name}: startup check failed:`, redact(err)));
   }
+});
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`Port ${config.port} is already in use. Pick another with PORT=... (or pg-studio --port ...).`);
+  } else {
+    console.error("[http] cannot listen:", err.message);
+  }
+  process.exit(1);
 });
 
 function shutdown(): void {

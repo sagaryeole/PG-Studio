@@ -1,0 +1,16 @@
+# Keep credentials and local state out of the build context.
+.env
+.env.*
+connections.json
+TODO.md
+.git
+.github
+.claude
+node_modules
+dist
+docs
+demo
+tests
+test-results
+playwright-report
+*.log

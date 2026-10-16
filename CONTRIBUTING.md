@@ -61,6 +61,13 @@ If a change touches any of these areas, say so in the PR and describe how you te
 - Add a line under "Unreleased" in [CHANGELOG.md](CHANGELOG.md).
 - Screenshots or a short GIF help for UI changes. Please use the demo database, not real data.
 
+## Releasing (maintainers)
+
+1. Bump `version` in `package.json` (`npm version X.Y.Z --no-git-tag-version`) and move the "Unreleased" notes in `CHANGELOG.md` under the new version. Merge that PR.
+2. Publish a GitHub release tagged `vX.Y.Z` on that commit. `.github/workflows/release.yml` then publishes:
+   - the npm package `@sagaryeole/pg-studio`, with provenance. Needs the `NPM_TOKEN` repository secret (an npm automation token); without it the step is skipped with a warning.
+   - the image `ghcr.io/sagaryeole/pg-studio` for amd64 and arm64, tagged `X.Y.Z`, `X.Y` and `latest`. The first time, set the package's visibility to public under the repository's Packages settings.
+
 ## Code of conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating you agree to uphold it.

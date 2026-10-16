@@ -7,11 +7,19 @@
  */
 import type { NextFunction, Request, Response } from "express";
 
-export function hostCheck(port: number) {
-  const allowed = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+/**
+ * Only loopback host names are accepted. `anyPort` is for the container
+ * image, where Docker may publish the app on a different host port; the
+ * DNS-rebinding defence is the host NAME, so the port can vary safely.
+ */
+function isLocalAuthority(value: string, port: number, anyPort: boolean): boolean {
+  const m = /^(127\.0\.0\.1|localhost):(\d{1,5})$/.exec(value.toLowerCase());
+  return !!m && (anyPort || Number(m[2]) === port);
+}
+
+export function hostCheck(port: number, anyPort = false) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const host = (req.headers.host ?? "").toLowerCase();
-    if (!allowed.has(host)) {
+    if (!isLocalAuthority(req.headers.host ?? "", port, anyPort)) {
       res.status(403).type("text/plain").send("Forbidden host");
       return;
     }
@@ -39,15 +47,15 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
  * custom header cannot be set cross-site without a CORS preflight we never
  * grant. Today there are no write routes, so this simply rejects them.
  */
-export function requireSameOriginForWrites(port: number) {
-  const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+export function requireSameOriginForWrites(port: number, anyPort = false) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (req.method === "GET" || req.method === "HEAD") {
       next();
       return;
     }
     const origin = req.headers.origin ?? "";
-    if (!origins.has(origin) || req.headers["x-pg-studio"] !== "1") {
+    const local = origin.startsWith("http://") && isLocalAuthority(origin.slice("http://".length), port, anyPort);
+    if (!local || req.headers["x-pg-studio"] !== "1") {
       res.status(403).json({ error: "Cross-origin write rejected" });
       return;
     }

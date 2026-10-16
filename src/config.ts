@@ -22,7 +22,14 @@ export interface Config {
   readonly connections: readonly Connection[];
   /** Where the connections came from, for the startup log. */
   readonly connectionsSource: string;
-  readonly host: "127.0.0.1";
+  /**
+   * 127.0.0.1, except in the official container image (PG_STUDIO_CONTAINER=1),
+   * where the app must listen on all interfaces of the container so Docker
+   * can forward a port to it. Publish that port to localhost only.
+   */
+  readonly host: "127.0.0.1" | "0.0.0.0";
+  /** Container mode: the browser reaches us through a published port that may differ from PORT. */
+  readonly container: boolean;
   readonly port: number;
   readonly schema: string;
   readonly statementTimeoutMs: number;
@@ -152,13 +159,15 @@ function loadConnections(): { connections: Connection[]; source: string } {
 }
 
 export function loadConfig(): Config {
+  const container = process.env["PG_STUDIO_CONTAINER"] === "1";
   const schema = (process.env["PG_SCHEMA"] ?? "public").trim() || "public";
   const { connections, source } = loadConnections();
 
   return {
     connections,
     connectionsSource: source,
-    host: "127.0.0.1",
+    host: container ? "0.0.0.0" : "127.0.0.1",
+    container,
     port: intFromEnv("PORT", 4321, 1024, 65535),
     schema,
     statementTimeoutMs: intFromEnv("STATEMENT_TIMEOUT_MS", 5000, 100, 120_000),

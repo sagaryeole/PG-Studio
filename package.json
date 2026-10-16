@@ -1,7 +1,6 @@
 {
-  "name": "pg-studio",
+  "name": "@sagaryeole/pg-studio",
   "version": "0.2.0",
-  "private": true,
   "description": "A fast, read-only PostgreSQL browser that runs locally. Browse tables, filter, follow foreign keys and inspect structure, with no SQL sent from the browser.",
   "keywords": [
     "postgresql",
@@ -43,7 +42,8 @@
     "demo:db": "docker compose -f demo/docker-compose.yml up -d --wait",
     "demo:down": "docker compose -f demo/docker-compose.yml down -v",
     "demo": "tsx watch --env-file=demo/demo.env src/server.ts",
-    "test:smoke": "bash scripts/smoke-test.sh"
+    "test:smoke": "bash scripts/smoke-test.sh",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -56,5 +56,18 @@
     "@types/pg": "^8.15.0",
     "tsx": "^4.20.0",
     "typescript": "~7.0.2"
-  }
+  },
+  "bin": {
+    "pg-studio": "dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "dist/**/*.js",
+    "public",
+    "connections.example.json",
+    "CHANGELOG.md"
+  ]
 }

@@ -78,8 +78,8 @@ If a change touches any of these areas, say so in the PR and describe how you te
 
 1. Bump `version` in `package.json` (`npm version X.Y.Z --no-git-tag-version`) and move the "Unreleased" notes in `CHANGELOG.md` under the new version. Merge that PR.
 2. Publish a GitHub release tagged `vX.Y.Z` on that commit. `.github/workflows/release.yml` then publishes:
-   - the npm package `@sagaryeole/pg-studio`, with provenance. Needs the `NPM_TOKEN` repository secret (an npm automation token); without it the step is skipped with a warning.
-   - the image `ghcr.io/sagaryeole/pg-studio` for amd64 and arm64, tagged `X.Y.Z`, `X.Y` and `latest`. The first time, set the package's visibility to public under the repository's Packages settings.
+   - the npm package `@sagaryeole/pg-studio`, with provenance. It uses npm [trusted publishing](https://docs.npmjs.com/trusted-publishers), so there is no npm token: the package's Trusted Publisher setting on npmjs.com names this repository and `release.yml`, with `npm publish` allowed.
+   - the image `ghcr.io/sagaryeole/pg-studio` for amd64 and arm64, tagged `X.Y.Z`, `X.Y` and `latest`.
 
 ## Code of conduct
 

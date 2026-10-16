@@ -5,11 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
 ### Added
 
 - SQL editor for read queries (press `q`): syntax colouring, run with ⌘↵ (or just the selected part), errors with line and column, **Explain** and **Explain analyze**, results in the grid and inspector, CSV/JSON export, history in the browser, and **Open in SQL editor** from the filter panel's SQL preview. A link can fill the editor (`#sql=…`) but never runs it.
 - The editor's guards: one statement over the extended protocol, always inside `SELECT * FROM (…) LIMIT n`, in a read-only transaction on a connection that is closed afterwards; refused for superuser connections; the query is cancelled on the server when the browser cancels it. `SQL_EDITOR=off` removes it; `SQL_TIMEOUT_MS` (30 s) and `SQL_MAX_ROWS` (1,000) set its limits.
 - `POST /api/sql` and `POST /api/sql/export`, and `capabilities.sql`, `sqlMaxRows` and `sqlTimeoutMs` in `/api/meta`.
+
+### Changed
+
+- Only the read-only SQL editor takes SQL text; the README, security model, roadmap and contributing rules now say so.
+- npm releases are published with trusted publishing (GitHub OIDC), so no npm token is stored in the repository.
 
 ## [0.3.0] - 2026-10-16
 
@@ -69,7 +76,8 @@ First public version.
 - Open-source project files: contributing guide, code of conduct, security policy, issue and PR templates, roadmap, and a project website.
 - Security hardening: read-only transactions, catalog-only identifiers, bind parameters, bounded reads, statement timeout, `127.0.0.1` binding, `Host` header check, strict CSP, same-origin guard for writes, credential redaction.
 
-[Unreleased]: https://github.com/sagaryeole/PG-Studio/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sagaryeole/PG-Studio/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sagaryeole/PG-Studio/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sagaryeole/PG-Studio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sagaryeole/PG-Studio/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sagaryeole/PG-Studio/releases/tag/v0.1.0

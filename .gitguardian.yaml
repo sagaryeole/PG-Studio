@@ -1,0 +1,7 @@
+# GitGuardian secret scanning settings.
+version: 2
+secret:
+  # demo/ holds throwaway credentials that only exist inside the local demo
+  # container (created by demo/seed.sql). They are not secrets.
+  ignored_paths:
+    - "demo/**"

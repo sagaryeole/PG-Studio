@@ -13,6 +13,7 @@ PG Studio's front end talks to a small JSON API under `/api`. It's served on `12
 | `GET /api/tables?schema=` | Tables, views and materialized views the role can SELECT, with planner row estimates. 404 for a schema without `USAGE`. |
 | `GET /api/tables/:name?page=1&pageSize=50` | Column metadata (type, category, PK, generated, `canUpdate`), primary key, foreign keys both ways, one page of rows, `hasNext`, truncated-cell list |
 | `GET /api/tables/:name/details` | Sizes, stats, column defaults and comments, indexes, constraints, triggers, view definition, generated DDL |
+| `GET /api/tables/:name/sql` | `{ sql }`: the `SELECT` for page 1 of the current view, with values inlined as quoted literals, for reading or pasting into psql. Display only; it's never executed and the endpoint takes no SQL. |
 | `GET /api/tables/:name/count` | Exact `count(*)` of the current view (filters and search apply) |
 | `GET /api/routines?schema=` | Functions, procedures, aggregates and window functions in the schema (not ones owned by extensions): `oid`, `name`, `kind`, `args`, `returns`, `language` |
 | `GET /api/routines/:oid` | One routine: flags (volatility, strict, `SECURITY DEFINER`, leakproof, parallel), owner, comment, `definition` from `pg_get_functiondef` (aggregates get a summary instead), and `usedByTriggers`. 404 unless its schema is readable. |
@@ -31,7 +32,8 @@ All `/api/tables/:name…` endpoints take `schema` (default `PG_SCHEMA`) and the
 | Param | Example | Notes |
 |---|---|---|
 | `sort`, `dir` | `sort=created_at&dir=desc` | The column must exist. NULLs sort last. The primary key is added as a tiebreaker so paging is stable. |
-| `filters` | `[{"c":"status","op":"eq","v":"published"}]` | JSON array, max 10, combined with AND. `op` is one of `eq neq lt lte gt gte contains not_contains starts ends null not_null`. `neq` and `not_contains` include NULL rows. |
+| `filters` | `[{"c":"status","op":"eq","v":"published"}]` | JSON array, max 10, combined with AND (or OR, see `match`). `op` is one of `eq neq lt lte gt gte contains not_contains starts ends null not_null`. `neq` and `not_contains` include NULL rows. |
+| `match` | `match=any` | `all` (default, AND) or `any` (OR) for the filters. Search is always ANDed on top. |
 | `q` | `q=dogs` | Case-insensitive search over string and enum columns. |
 | `after`, `before` | `after=WyIxMDAiXQ` | Keyset cursors (rows endpoint only). Take them from `nextCursor` / `prevCursor` in the previous response. |
 | `page`, `pageSize` | `page=3&pageSize=100` | `pageSize` ≤ 100. `page` is used in offset mode. |

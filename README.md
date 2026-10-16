@@ -38,7 +38,7 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 - **Read-only by design.** No SQL console, no write routes. Every query runs in a `READ ONLY` transaction that always rolls back, and the docs walk you through a SELECT-only role, which is the real guarantee.
 - **Local only.** It binds to `127.0.0.1`, checks the `Host` header against DNS rebinding, and sends a strict Content Security Policy. Nothing leaves your machine.
 - **Fast on big tables.** Keyset pagination makes page 9,000 as quick as page 1 (6 ms vs 1.2 s with `OFFSET` on a 1M-row table).
-- **Small and auditable.** About 1,600 lines of strict TypeScript on the server and a framework-free front end with no build step. Two runtime dependencies: `express` and `pg`.
+- **Small and auditable.** About 2,200 lines of strict TypeScript on the server and a framework-free front end with no build step. Runtime dependencies: `express`, plus `pg` and `pg-connection-string` from node-postgres.
 
 ## Features
 
@@ -48,7 +48,8 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 | **Every database on a server** | A database switcher lists each database the role may connect to, with its size. Each gets its own small pool, opened on first use. |
 | **Functions and procedures** | Browse functions, procedures and aggregates next to tables: signature, return type, language, volatility, `SECURITY DEFINER`, owner, full source, and the triggers that call them. View only; nothing is ever executed. |
 | **⌘K jump anywhere** | Fuzzy search across every schema's tables, views and functions. Recently opened tables come first. |
-| **Sort and filter from the header** | `=` `≠` `<` `≤` `>` `≥`, contains, starts/ends with, empty / has a value. Filters combine with AND and show as editable chips. |
+| **Filter panel** | Stack up to 10 conditions (`=` `≠` `<` `≤` `>` `≥`, contains, starts/ends with, empty / has a value), match **all** or **any**, switch one off without deleting it, and preview the exact `SELECT` (read-only, copyable). Press `f` to open it; applied filters stay visible as chips. |
+| **Sort and filter from the header** | Each column header menu sorts, filters, or keeps only rows with / without a value. |
 | **Full-text-ish search** | Press `/` to search across a table's text and enum columns. |
 | **Row inspector** | Click any cell to see its full value (JSON pretty-printed) and every field of that row, so wide tables stay readable. |
 | **Foreign-key navigation** | The ↗ in an FK cell opens the referenced row. The inspector also lists the rows that point *to* this one. Composite and cross-schema keys work, and browser Back returns you to where you were. |
@@ -65,16 +66,20 @@ PG Studio does one job: it lets you browse a PostgreSQL database quickly and saf
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshot-filters.png" alt="Orders table filtered by status and total, sorted by date"><br><sub><b>Filter chips and sorting</b>, all server-side</sub></td>
+    <td width="50%"><img src="docs/assets/screenshot-filters.png" alt="Filter panel with three conditions, match any, and the SQL preview"><br><sub><b>Filter panel</b>: all / any, on-off conditions, SQL preview</sub></td>
     <td width="50%"><img src="docs/assets/screenshot-inspector.png" alt="Row inspector showing pretty-printed JSONB and foreign-key links"><br><sub><b>Row inspector</b>: JSONB, outgoing and incoming foreign keys</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/assets/screenshot-structure.png" alt="Structure tab with sizes, stats, columns and indexes"><br><sub><b>Structure tab</b>: sizes, stats, indexes, constraints, DDL</sub></td>
-    <td width="50%"><img src="docs/assets/screenshot-jump.png" alt="Cmd+K jump to table dialog"><br><sub><b>⌘K</b> jump to any table in any schema</sub></td>
+    <td width="50%"><img src="docs/assets/screenshot-jump.png" alt="Cmd+K jump dialog listing tables and functions"><br><sub><b>⌘K</b> jump to any table or function in any schema</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/assets/screenshot-dark.png" alt="PG Studio in dark mode"><br><sub><b>Dark mode</b></sub></td>
     <td width="50%"><img src="docs/assets/screenshot-home.png" alt="Start page listing the largest tables"><br><sub><b>Start page</b> with the largest and recent tables</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshot-functions.png" alt="A plpgsql function with its signature, flags and source"><br><sub><b>Functions and procedures</b>: signature, flags and source</sub></td>
+    <td width="50%"><img src="docs/assets/screenshot-databases.png" alt="Database menu listing analytics, bookshop and postgres with sizes"><br><sub><b>Connection / database / schema</b> switcher</sub></td>
   </tr>
 </table>
 
@@ -201,6 +206,7 @@ The server prints the cause at startup (`[db] startup check failed: …`) and th
 |---|---|
 | <kbd>⌘</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>K</kbd> | Jump to a table or view |
 | <kbd>/</kbd> | Search the open table |
+| <kbd>F</kbd> | Open or close the filter panel (<kbd>Enter</kbd> applies) |
 | <kbd>←</kbd> <kbd>↑</kbd> <kbd>→</kbd> <kbd>↓</kbd> | Move between cells |
 | <kbd>Enter</kbd> | Open the row in the side panel |
 | <kbd>⌘</kbd> <kbd>C</kbd> | Copy the selected cell |
@@ -217,7 +223,7 @@ PG Studio is built to be safe to point at a real database:
 - **Bounded reads.** Page size ≤ 100, cells cut to 5,000 characters inside PostgreSQL, a per-query `statement_timeout`, and capped exports.
 - **Localhost hardening.** Binds to `127.0.0.1`, `Host` header allow-list against DNS rebinding, same-origin guard for any future writes, and a strict CSP with no inline script or style.
 - **XSS-safe rendering.** Every database value is rendered with `textContent`.
-- **No credential leaks.** Connection strings are redacted from logs and error messages.
+- **No credential leaks.** Connection strings are redacted from logs and error messages, and never sent to the browser: it picks a saved connection by id, and only databases the role may `CONNECT` to can be opened.
 
 Each control was tested against a hostile input (`x"; DROP TABLE users;--` table names, `' OR '1'='1` filters, `<img onerror>` in JSONB, `Host: evil.example`, and more). See the full **[security model and test matrix](SECURITY.md#security-model)**. To report a vulnerability, follow [SECURITY.md](SECURITY.md).
 
@@ -232,7 +238,7 @@ PG Studio isn't a replacement for a full database IDE. It's the small, safe tool
 | Install | `npm install` | Desktop or server | Desktop (Java) | Desktop |
 | Runs in | Your browser, on localhost | Desktop or web | Desktop | Desktop |
 | License | Apache 2.0 | PostgreSQL | Apache 2 / commercial | Commercial |
-| Size of codebase to audit | ~4.4k lines | Large | Large | Closed source |
+| Size of codebase to audit | ~5.8k lines | Large | Large | Closed source |
 
 For running ad-hoc SQL, managing roles or designing schemas, use one of the others.
 

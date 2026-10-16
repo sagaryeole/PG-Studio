@@ -58,7 +58,7 @@ scripts/
 - **The role is the boundary, not the transaction mode.** `READ ONLY` is a guard rail. A SELECT-only role is the real guarantee, which is why the server checks the role's privileges at startup and the UI turns the badge red if it can write.
 - **Text in, text out.** Values travel as PostgreSQL text output, which is also the input format for every type, so a future editor can send back exactly what the grid shows.
 - **Bounded everything.** Page size, cell length, export rows and query time all have hard limits.
-- **No framework, no build.** The front end is about 1,900 lines of plain JavaScript. That keeps the attack surface small, lets the CSP forbid inline script and style, and means there's nothing to compile.
+- **No framework, no build.** The front end is about 2,500 lines of plain JavaScript. That keeps the attack surface small, lets the CSP forbid inline script and style, and means there's nothing to compile.
 - **Credentials stay on the server.** Connections come from the environment or `connections.json`. The browser picks one by id and never sees a URL or password, and no endpoint accepts connection details.
 - **Code is shown, never run.** Functions and procedures are read from the catalog (`pg_get_functiondef`); nothing calls them.
 - **Localhost only.** The bind address isn't configurable. Running PG Studio for other people would need authentication, which is out of scope.

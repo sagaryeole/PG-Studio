@@ -477,7 +477,7 @@ async function enterScope(conn, db, h, { push = false } = {}) {
   showNotice("");
   const prevDefault = state.scope?.conn === conn ? state.scope.defaultDb : null;
   state.scope = { conn, db, defaultDb: prevDefault };
-  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], tablesSchema: null, allTables: null, current: null, data: null, details: null, routine: null });
+  Object.assign(state, { meta: null, schemas: [], databases: [], tables: [], routines: [], allRoutines: null, tablesSchema: null, allTables: null, current: null, data: null, details: null, routine: null });
   $("view").hidden = true;
   $("routine").hidden = true;
   $("empty").hidden = false;
@@ -1730,7 +1730,7 @@ function renderChips() {
 function updateFilterButton() {
   const n = state.current ? state.current.filters.filter((f) => !f.off).length : 0;
   const btn = $("filter-btn");
-  btn.replaceChildren("Filter", n ? el("span", { class: "fp-count", text: String(n) }) : null);
+  btn.replaceChildren("Filter", ...(n ? [el("span", { class: "fp-count", text: String(n) })] : []));
   btn.classList.toggle("active", n > 0);
   btn.setAttribute("aria-expanded", String(state.panelOpen));
   btn.setAttribute("aria-label", n ? `Filter, ${plural(n, "condition")} on` : "Filter");

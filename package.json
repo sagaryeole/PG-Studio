@@ -1,6 +1,6 @@
 {
   "name": "@sagaryeole/pg-studio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A fast, read-only PostgreSQL browser that runs locally. Browse tables, filter, follow foreign keys, inspect structure and run read-only SQL.",
   "keywords": [
     "postgresql",

@@ -800,6 +800,7 @@ dialog::backdrop { background: rgba(10, 14, 20, 0.35); }
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 45%;
+}
 
 /* ---- Filter panel ---------------------------------------------------------- */
 

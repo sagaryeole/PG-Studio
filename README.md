@@ -23,7 +23,7 @@ The browser never sends SQL, and every query runs in a read-only transaction wit
 
 <br>
 
-<img src="docs/assets/demo.gif" alt="PG Studio demo: jump to a table with Cmd+K, filter and sort rows, open a row in the side panel, follow a foreign key, view the table structure" width="900">
+<img src="docs/assets/demo.gif" alt="PG Studio demo: jump to a table with Cmd+K, build OR filters and preview their SQL, open a row in the side panel, read a function's source, switch to another database, dark mode" width="900">
 
 </div>
 

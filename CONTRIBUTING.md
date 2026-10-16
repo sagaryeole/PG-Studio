@@ -34,6 +34,19 @@ npm run build
 npm run test:smoke        # needs the demo DB and a running server (npm run demo)
 ```
 
+### Browser tests
+
+`tests/e2e/` holds [Playwright](https://playwright.dev) tests that drive the real UI in Chromium. They catch what the API smoke test can't: unstyled panels, stray text like "null" in the chrome, console errors and broken navigation. Any uncaught page error or `console.error` fails a test.
+
+```bash
+npm run demo:db                      # demo DB on 127.0.0.1:55432 (leave it running)
+npm run build                        # the tests run dist/server.js, so rebuild after changing src/
+npx playwright install chromium      # once
+npm run test:e2e
+```
+
+The tests start their own server on port 4361, so they don't clash with `npm run demo` on 4321. The front end in `public/` is served as-is, so UI changes need no rebuild.
+
 ## The safety rules
 
 Every change must keep these. They're what makes PG Studio safe to point at a real database:
@@ -60,6 +73,13 @@ If a change touches any of these areas, say so in the PR and describe how you te
 - Update the README or `docs/` if behavior, configuration or the API changes.
 - Add a line under "Unreleased" in [CHANGELOG.md](CHANGELOG.md).
 - Screenshots or a short GIF help for UI changes. Please use the demo database, not real data.
+
+## Releasing (maintainers)
+
+1. Bump `version` in `package.json` (`npm version X.Y.Z --no-git-tag-version`) and move the "Unreleased" notes in `CHANGELOG.md` under the new version. Merge that PR.
+2. Publish a GitHub release tagged `vX.Y.Z` on that commit. `.github/workflows/release.yml` then publishes:
+   - the npm package `@sagaryeole/pg-studio`, with provenance. Needs the `NPM_TOKEN` repository secret (an npm automation token); without it the step is skipped with a warning.
+   - the image `ghcr.io/sagaryeole/pg-studio` for amd64 and arm64, tagged `X.Y.Z`, `X.Y` and `latest`. The first time, set the package's visibility to public under the repository's Packages settings.
 
 ## Code of conduct
 

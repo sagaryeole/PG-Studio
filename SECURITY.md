@@ -41,8 +41,8 @@ It doesn't try to be a multi-user server. There's no authentication, so **don't 
 | Read-only | `BEGIN READ ONLY` plus an unconditional `ROLLBACK`, **plus** the SELECT-only role | `DELETE` is rejected even as superuser (25006) |
 | Bounded reads | `LIMIT` ≤ 100 (fetches n+1 rows to detect a next page), integer-validated `page`, values cut to 5,000 chars inside PostgreSQL. Exports: ≤ `EXPORT_MAX_ROWS` rows, 100,000 chars per value. | Bad params return 400. Long values are flagged as cut. A 200k-row export stops at 10,000 and says so. |
 | Timeouts | `statement_timeout` set per transaction | `pg_sleep(2)` is cancelled at 300 ms |
-| Network exposure | Listens on `127.0.0.1` only; not configurable | |
-| DNS rebinding | `Host` header must be `127.0.0.1:PORT` or `localhost:PORT` | `Host: evil.example` returns 403 |
+| Network exposure | Listens on `127.0.0.1` only; not configurable. The Docker image listens inside the container and must be published with `-p 127.0.0.1:…` | |
+| DNS rebinding | `Host` header must be `127.0.0.1:PORT` or `localhost:PORT` (any port in the Docker image, where the published port can differ) | `Host: evil.example` returns 403 |
 | CSRF (ready for edits) | Non-GET requests need a same-site `Origin` and an `x-pg-studio: 1` header | A cross-origin POST returns 403 |
 | XSS from data | Every database value is rendered with `textContent`. Strict CSP: no inline script or style. | `<img onerror=alert(1)>` in jsonb renders as text, no dialog |
 | No credential leaks | Connection strings are redacted from logged errors | Logs grepped for the password |

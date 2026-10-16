@@ -215,13 +215,12 @@ export async function fetchDetails(client: pg.PoolClient, t: TableMeta): Promise
   // DDL is correct no matter which schema it is run from. SET LOCAL: this
   // transaction only (it always rolls back).
   await client.query("SELECT set_config('search_path', '', true)");
-  const [ovRes, colRes, ixRes, conRes, tgRes] = await Promise.all([
-    client.query(OVERVIEW_SQL, [t.oid]),
-    client.query(COLUMN_DETAILS_SQL, [t.oid]),
-    client.query(INDEXES_SQL, [t.oid]),
-    client.query(CONSTRAINTS_SQL, [t.oid]),
-    client.query(TRIGGERS_SQL, [t.oid]),
-  ]);
+  // In sequence: one client runs one query at a time (pg 9 rejects overlapping calls).
+  const ovRes = await client.query(OVERVIEW_SQL, [t.oid]);
+  const colRes = await client.query(COLUMN_DETAILS_SQL, [t.oid]);
+  const ixRes = await client.query(INDEXES_SQL, [t.oid]);
+  const conRes = await client.query(CONSTRAINTS_SQL, [t.oid]);
+  const tgRes = await client.query(TRIGGERS_SQL, [t.oid]);
   const ov = ovRes.rows[0] ?? {};
 
   const columns: ColumnDetail[] = colRes.rows.map((r) => ({

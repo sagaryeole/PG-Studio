@@ -20,6 +20,7 @@ flowchart LR
 
 ```
 src/
+  cli.ts           the `pg-studio` command: flags → environment, then starts server.ts
   server.ts        Express wiring, static files, startup role check
   config.ts        env parsing, connections.json
   pools.ts         one pool per connection, plus on-demand pools for other databases (LRU)
